@@ -8,7 +8,6 @@ import os
 # Laden der Umgebungsvariablen (SERVER, DATABASE, UID, PWD) aus der .env-Datei
 load_dotenv()
 
-
 ########################################################################################################################
 
 # --- 1. Konfiguration und Initialisierung ---
@@ -31,7 +30,6 @@ if 'produkt_input' not in st.session_state: st.session_state['produkt_input'] = 
 # Steuert, ob die angewendeten Filter die DB-Abfrage triggern sollen (Muss beim Start FALSE sein)
 if 'data_applied' not in st.session_state: st.session_state['data_applied'] = False
 
-
 # Applied State Keys (von DB-Funktion gelesen) - Initialisierung auf Standardwerte
 # HINWEIS: Die Funktion _init_applied_state() wurde entfernt, da sie data_applied = True gesetzt hat.
 if 'applied_zeitraum' not in st.session_state: st.session_state['applied_zeitraum'] = 'Gesamt'
@@ -39,7 +37,8 @@ if 'applied_start_date' not in st.session_state: st.session_state['applied_start
 if 'applied_end_date' not in st.session_state: st.session_state['applied_end_date'] = DEFAULT_END_DATE
 if 'applied_kunde_input' not in st.session_state: st.session_state['applied_kunde_input'] = []
 if 'applied_produkt_input' not in st.session_state: st.session_state['applied_produkt_input'] = []
-if 'applied_produkt_filter_exklusiv' not in st.session_state: st.session_state['applied_produkt_filter_exklusiv'] = False
+if 'applied_produkt_filter_exklusiv' not in st.session_state: st.session_state[
+    'applied_produkt_filter_exklusiv'] = False
 
 
 def apply_filters():
@@ -99,8 +98,10 @@ def update_dates_on_period_change():
     if target_start_date is not None and zeitraum != 'Benutzerdefiniert':
         st.session_state['start_date_input'] = target_start_date
         st.session_state['end_date_input'] = target_end_date
+
+
 ########################################################################################################################
-#SQL
+# SQL
 
 #######################################################################################################################
 # --- HILFSFUNKTIONEN ZUM LADEN VON DATEN MIT EXPLIZITEM CACHING ---
@@ -197,8 +198,42 @@ def load_kpi_data(customer_ids, start_date, end_date, material_ids, is_strict_in
         # st.error(f"Fehler bei der KPI-Datenbankabfrage: {ex}")
         return pd.DataFrame()
 
+
+@st.cache_data(ttl=600)
+def load_dfg_data(customer_ids, start_date, end_date, material_ids, is_strict_inclusion):
+    """Lädt die DFG-Daten (Directly-Follows Graph), Cache-Key ist die Liste der Argumente."""
+    connection_string = _get_db_connection()
+    if not connection_string:
+        return pd.DataFrame()
+
+    # --- Parameter formatieren (liest direkt von den Funktionsargumenten) ---
+    customer_id_param = f"'{','.join(map(str, customer_ids))}'" if customer_ids else "NULL"
+    start_date_param = f"'{start_date.strftime('%Y-%m-%d')}'"
+    end_date_param = f"'{end_date.strftime('%Y-%m-%d')}'"
+    material_ids_list = [f"'{p.replace('\'', '\'\'')}'" for p in material_ids]
+    material_ids_param = f"'{','.join(material_ids_list)}'" if material_ids_list else "NULL"
+    material_filter_mode_param = 1 if is_strict_inclusion else 0
+
+    SQL_QUERY = f"""
+    EXEC process_analyzer_orchestrator
+        @output = 'dfg',
+        @input_customer_id = {customer_id_param},
+        @input_start_date = {start_date_param},
+        @input_end_date = {end_date_param},
+        @input_material_ids = {material_ids_param},
+        @input_material_filter_mode = {material_filter_mode_param};
+    """
+    try:
+        with pyodbc.connect(connection_string) as connection:
+            df = pd.read_sql(SQL_QUERY, connection)
+        return df
+    except pyodbc.Error as ex:
+        st.error(f"Fehler bei der DFG-Datenbankabfrage: {ex}")
+        return pd.DataFrame()
+
+
 ########################################################################################################################
-#SQL - Rückgabe
+# SQL - Rückgabe
 ########################################################################################################################
 
 # --- DATEN LADEN MIT APPLIED FILTERN ---
@@ -206,6 +241,7 @@ def load_kpi_data(customer_ids, start_date, end_date, material_ids, is_strict_in
 # Initialisierung der DataFrames, falls noch keine Daten geladen wurden
 df_eventlog = pd.DataFrame()
 df_kpi = pd.DataFrame()
+df_dfg = pd.DataFrame()
 
 # Bedingte Ausführung: Führe SQL-Abfrage nur aus, wenn der Button gedrückt wurde
 if st.session_state.get('data_applied', False):
@@ -217,7 +253,7 @@ if st.session_state.get('data_applied', False):
     applied_material_ids = st.session_state.get('applied_produkt_input', [])
     applied_is_strict_inclusion = st.session_state.get('applied_produkt_filter_exklusiv', False)
 
-    # DATEN LADEN: Beide Datensätze werden geladen
+    # DATEN LADEN: Alle Datensätze werden geladen
     df_eventlog = load_eventlog_data(
         customer_ids=applied_customer_ids,
         start_date=applied_start_date,
@@ -226,6 +262,13 @@ if st.session_state.get('data_applied', False):
         is_strict_inclusion=applied_is_strict_inclusion
     )
     df_kpi = load_kpi_data(
+        customer_ids=applied_customer_ids,
+        start_date=applied_start_date,
+        end_date=applied_end_date,
+        material_ids=applied_material_ids,
+        is_strict_inclusion=applied_is_strict_inclusion
+    )
+    df_dfg = load_dfg_data(
         customer_ids=applied_customer_ids,
         start_date=applied_start_date,
         end_date=applied_end_date,
@@ -241,9 +284,6 @@ if st.session_state.get('data_applied', False):
     # Sicherstellen, dass Umsatz numerisch ist, um Summen berechnen zu können
     if 'Umsatz' in df_eventlog.columns:
         df_eventlog['Umsatz'] = pd.to_numeric(df_eventlog['Umsatz'], errors='coerce').fillna(0)
-
-
-
 
 ########################################################################################################################
 # Frontend
@@ -319,9 +359,6 @@ with col1:
         # 2. OPTIONALE FILTER (INNERHALB DES FORMS)
         with st.form(key='filter_form'):
 
-
-
-
             # 2. OPTIONALE FILTER
             st.markdown("#### **2. Weitere Filter**", unsafe_allow_html=True)  # Überschrift angepasst/verkleinert
             st.markdown("Bitte weitere Filter wählen:")
@@ -342,7 +379,6 @@ with col1:
 
             st.markdown("---")
 
-
             submit_button = st.form_submit_button(label='Filter anwenden')
 
         # NEUE LOGIK: Führt apply_filters() NUR aus, wenn der Submit Button gedrückt wurde
@@ -359,9 +395,6 @@ with col1:
 
 # filtered_df ist nun df_eventlog
 filtered_df = df_eventlog.copy()
-
-
-
 
 ########################################################################################################################
 
@@ -395,10 +428,6 @@ with col2:
 
     # Schließt den zentrierten Container für col2
     st.markdown("</div>", unsafe_allow_html=True)
-
-
-
-
 
 ########################################################################################################################
 
@@ -445,23 +474,95 @@ with col3:
         }
     )
 
-    # 2. (Platzhalter als Bild)
-    st.markdown("<h3 style='text-align: center;'>DFG</h3>", unsafe_allow_html=True)  # Neue Überschrift
+    # 2. DFG-Visualisierung (NUR GRAPH, KEINE TABELLE)
+    st.markdown("<h3 style='text-align: center;'>DFG - Prozessfluss</h3>", unsafe_allow_html=True)
 
-    # URL für das Bild (dieses Bild muss im Ordner 'images' vorhanden sein oder durch eine URL ersetzt werden)
-    placeholder_url = "images\dfg_bsp.png"
+    if not df_dfg.empty:
+        # Netzwerkdiagramm mit Plotly
+        try:
+            import plotly.graph_objects as go
 
-    st.image(
-        placeholder_url,
-        caption="Prozess-Visualisierung (Digitaler Flussgraph)"
-    )
+            # Erstelle Netzwerkgraph
+            fig = go.Figure()
+
+            # Knoten sammeln
+            nodes = set()
+            for _, row in df_dfg.iterrows():
+                nodes.add(row['From_Activity'])
+                nodes.add(row['To_Activity'])
+
+            nodes_list = list(nodes)
+            node_indices = {node: i for i, node in enumerate(nodes_list)}
+
+            # Edges hinzufügen (NUR Linien, keine permanenten Labels)
+            for _, row in df_dfg.iterrows():
+                from_idx = node_indices[row['From_Activity']]
+                to_idx = node_indices[row['To_Activity']]
+
+                # Berechne Position (einfaches Layout)
+                x_from = (from_idx % 5) * 100
+                y_from = (from_idx // 5) * 100
+                x_to = (to_idx % 5) * 100
+                y_to = (to_idx // 5) * 100
+
+                # Zeichne Kante mit Hover-Info (OHNE None am Ende!)
+                fig.add_trace(go.Scatter(
+                    x=[x_from, x_to],
+                    y=[y_from, y_to],
+                    mode='lines',
+                    line=dict(width=max(2, row['Frequency'] / 10), color='lightblue'),
+                    showlegend=False,
+                    text=f"{row['From_Activity']} → {row['To_Activity']}<br>Häufigkeit: {row['Frequency']}",
+                    hoverinfo='text',
+                    hoverlabel=dict(bgcolor="white", font_size=12)
+                ))
+
+            # Knoten hinzufügen
+            for i, node in enumerate(nodes_list):
+                x = (i % 5) * 100
+                y = (i // 5) * 100
+                fig.add_trace(go.Scatter(
+                    x=[x],
+                    y=[y],
+                    mode='markers+text',
+                    marker=dict(size=20, color='lightcoral'),
+                    text=node,
+                    textposition='top center',
+                    showlegend=False,
+                    hoverinfo='skip'  # Kein Hover auf Knoten
+                ))
+
+            fig.update_layout(
+                height=500,
+                showlegend=False,
+                xaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
+                yaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
+                margin=dict(l=20, r=20, t=20, b=20)
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+
+        except ImportError:
+            st.error("⚠️ Plotly ist nicht installiert!")
+            st.info("Bitte installiere Plotly mit: pip install plotly==5.24.1")
+            st.code("""
+# Versuche eine dieser Optionen:
+pip install plotly==5.24.1
+python -m pip install plotly==5.24.1
+pip install --user plotly==5.24.1
+
+# Prüfe welches Python Streamlit verwendet:
+import sys
+print(sys.executable)
+            """, language="bash")
+
+    else:
+        st.warning("Keine DFG-Daten verfügbar. Bitte wenden Sie Filter an oder prüfen Sie die Datenbasis.")
 
     st.caption(f"Anzeige der Visualisierungen basierend auf {len(filtered_df)} von {len(df_eventlog)} Datensätzen.")
 
     # Schließt den zentrierten Container für col3
     st.markdown("</div>", unsafe_allow_html=True)
-
-
 
 ########################################################################################################################
 
