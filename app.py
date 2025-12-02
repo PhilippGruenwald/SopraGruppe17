@@ -142,7 +142,7 @@ def load_eventlog_data(customer_ids, start_date, end_date, material_ids, is_stri
     customer_id_param = f"'{','.join(map(str, customer_ids))}'" if customer_ids else "NULL"
     start_date_param = f"'{start_date.strftime('%Y-%m-%d')}'"
     end_date_param = f"'{end_date.strftime('%Y-%m-%d')}'"
-    material_ids_list = [f"'{p.replace('\'', '\'\'')}'" for p in material_ids]
+    material_ids_list = [str(p).replace("'", "''") for p in material_ids]
     material_ids_param = f"'{','.join(material_ids_list)}'" if material_ids_list else "NULL"
     material_filter_mode_param = 1 if is_strict_inclusion else 0
 
@@ -177,7 +177,7 @@ def load_kpi_data(customer_ids, start_date, end_date, material_ids, is_strict_in
     customer_id_param = f"'{','.join(map(str, customer_ids))}'" if customer_ids else "NULL"
     start_date_param = f"'{start_date.strftime('%Y-%m-%d')}'"
     end_date_param = f"'{end_date.strftime('%Y-%m-%d')}'"
-    material_ids_list = [f"'{p.replace('\'', '\'\'')}'" for p in material_ids]
+    material_ids_list = [str(p).replace("'", "''") for p in material_ids]
     material_ids_param = f"'{','.join(material_ids_list)}'" if material_ids_list else "NULL"
     material_filter_mode_param = 1 if is_strict_inclusion else 0
 
@@ -210,7 +210,8 @@ def load_dfg_data(customer_ids, start_date, end_date, material_ids, is_strict_in
     customer_id_param = f"'{','.join(map(str, customer_ids))}'" if customer_ids else "NULL"
     start_date_param = f"'{start_date.strftime('%Y-%m-%d')}'"
     end_date_param = f"'{end_date.strftime('%Y-%m-%d')}'"
-    material_ids_list = [f"'{p.replace('\'', '\'\'')}'" for p in material_ids]
+    material_ids_list = [str(p).replace("'", "''") for p in material_ids]
+
     material_ids_param = f"'{','.join(material_ids_list)}'" if material_ids_list else "NULL"
     material_filter_mode_param = 1 if is_strict_inclusion else 0
 
@@ -232,6 +233,70 @@ def load_dfg_data(customer_ids, start_date, end_date, material_ids, is_strict_in
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=3600)
+def load_lov_customers_data():
+    """
+    Lädt Kunden-IDs und Namen.
+    Rückgabe: (Liste der IDs, Dictionary {ID: Name})
+    """
+    connection_string = _get_db_connection()
+    if not connection_string:
+        return [], {}
+
+    # SQL angepasst auf Select *
+    SQL_QUERY = "SELECT CUSTOMER_ID, CUSTOMER_LONG FROM LOV_CUSTOMER"
+
+    try:
+        with pyodbc.connect(connection_string) as connection:
+            df = pd.read_sql(SQL_QUERY, connection)
+
+        if df.empty:
+            return [], {}
+
+        # 1. Liste aller IDs für die Auswahl-Optionen
+        ids = df['CUSTOMER_ID'].tolist()
+
+        # 2. Dictionary für die Übersetzung ID -> Name
+        # Ergebnis: {1: '01 / BikePro...', 2: '02 / BikePro...'}
+        mapping = pd.Series(df.CUSTOMER_LONG.values, index=df.CUSTOMER_ID).to_dict()
+
+        return ids, mapping
+
+    except Exception as ex:
+        st.error(f"Fehler beim Laden der Kunden-Liste: {ex}")
+        return [], {}
+
+
+@st.cache_data(ttl=3600)
+def load_lov_products_data():
+    """
+    Lädt Material-IDs und Beschreibungen.
+    Rückgabe: (Liste der IDs, Dictionary {ID: Name})
+    """
+    connection_string = _get_db_connection()
+    if not connection_string:
+        return [], {}
+
+    SQL_QUERY = "exec dbo.process_analyzer_orchestrator @output = 'material'"
+
+    try:
+        with pyodbc.connect(connection_string) as connection:
+            df = pd.read_sql(SQL_QUERY, connection)
+
+        if df.empty:
+            return [], {}
+
+        # Spaltennamen basierend auf deiner Info: ID_MAT und MAT_DESCR
+        ids = df['ID_MAT'].tolist()
+
+        # Dictionary: {2: 'Cube Aim Disc', 3: 'Bulls Copperhead 3'}
+        mapping = pd.Series(df.MAT_DESCR.values, index=df.ID_MAT).to_dict()
+
+        return ids, mapping
+
+    except Exception as ex:
+        st.error(f"Fehler beim Laden der Produkt-Liste: {ex}")
+        return [], {}
 ########################################################################################################################
 # SQL - Rückgabe
 ########################################################################################################################
@@ -299,17 +364,8 @@ with col1:
     with filter_container:
         # DYNAMISCHES LADEN DER FILTEROPTIONEN
 
-        # HINWEIS: Filteroptionen werden nun basierend auf den Eventlog-Daten generiert
-        # Fallback auf leere Liste, wenn df_eventlog leer ist
-        if 'Produkt' in df_eventlog.columns and not df_eventlog.empty:
-            PRODUKTE = df_eventlog['Produkt'].unique().tolist()
-        else:
-            PRODUKTE = []  # Fallback
-
-        if 'Kunden_ID' in df_eventlog.columns and not df_eventlog.empty:
-            KUNDEN_ID = df_eventlog['Kunden_ID'].unique().tolist()
-        else:
-            KUNDEN_ID = []  # Fallback
+        customer_ids_options, customer_map = load_lov_customers_data()
+        product_ids_options, product_map = load_lov_products_data()
 
         # --- DATUM BERECHNUNG FÜR UI-ANZEIGE ---
         current_end_date = date.today()
@@ -365,11 +421,21 @@ with col1:
 
             # 2. Kunde (Multiselect)
             st.markdown("##### Kunde", unsafe_allow_html=True)
-            st.multiselect('Kunde auswählen', KUNDEN_ID, key='kunde_input')
+            st.multiselect(
+                'Kunde auswählen',
+                options=customer_ids_options,  # Die Box enthält technisch die IDs
+                format_func=lambda x: customer_map.get(x, str(x)),  # Zeigt aber den Namen an!
+                key='kunde_input'  # Speichert die gewählten IDs im State
+            )
 
             # 3. Produkte (Multiselect)
             st.markdown("##### Produkt", unsafe_allow_html=True)
-            st.multiselect('Wähle ein Produkt', PRODUKTE, key='produkt_input')
+            st.multiselect(
+                'Wähle ein Produkt',
+                options=product_ids_options,  # Die Box enthält technisch die IDs
+                format_func=lambda x: product_map.get(x, str(x)),  # Zeigt aber den Namen an!
+                key='produkt_input'  # Speichert die gewählten IDs im State
+            )
 
             st.checkbox(
                 "Strikte Inklusion",
