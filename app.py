@@ -24,18 +24,20 @@ if 'zeitraum_input' not in st.session_state: st.session_state['zeitraum_input'] 
 if 'start_date_input' not in st.session_state: st.session_state['start_date_input'] = DEFAULT_START_DATE
 if 'end_date_input' not in st.session_state: st.session_state['end_date_input'] = DEFAULT_END_DATE
 if 'produkt_filter_exklusiv' not in st.session_state: st.session_state['produkt_filter_exklusiv'] = False
-if 'kunde_input' not in st.session_state: st.session_state['kunde_input'] = []
+
+# ÄNDERUNG 1: Initialisierung auf None (bedeutet "Alle Kunden") statt []
+if 'kunde_input' not in st.session_state: st.session_state['kunde_input'] = None
 if 'produkt_input' not in st.session_state: st.session_state['produkt_input'] = []
 
 # Steuert, ob die angewendeten Filter die DB-Abfrage triggern sollen (Muss beim Start FALSE sein)
 if 'data_applied' not in st.session_state: st.session_state['data_applied'] = False
 
-# Applied State Keys (von DB-Funktion gelesen) - Initialisierung auf Standardwerte
-# HINWEIS: Die Funktion _init_applied_state() wurde entfernt, da sie data_applied = True gesetzt hat.
+# Applied State Keys (von DB-Funktion gelesen)
 if 'applied_zeitraum' not in st.session_state: st.session_state['applied_zeitraum'] = 'Gesamt'
 if 'applied_start_date' not in st.session_state: st.session_state['applied_start_date'] = DEFAULT_START_DATE
 if 'applied_end_date' not in st.session_state: st.session_state['applied_end_date'] = DEFAULT_END_DATE
-if 'applied_kunde_input' not in st.session_state: st.session_state['applied_kunde_input'] = []
+# ÄNDERUNG 2: Applied State auch auf None initialisieren
+if 'applied_kunde_input' not in st.session_state: st.session_state['applied_kunde_input'] = None
 if 'applied_produkt_input' not in st.session_state: st.session_state['applied_produkt_input'] = []
 if 'applied_produkt_filter_exklusiv' not in st.session_state: st.session_state[
     'applied_produkt_filter_exklusiv'] = False
@@ -49,37 +51,29 @@ def apply_filters():
     st.session_state['applied_kunde_input'] = st.session_state['kunde_input']
     st.session_state['applied_produkt_input'] = st.session_state['produkt_input']
     st.session_state['applied_produkt_filter_exklusiv'] = st.session_state['produkt_filter_exklusiv']
-    # Wichtig: Setze den Trigger, damit die DB-Abfrage beim nächsten Rerun ausgeführt wird
-    st.session_state.data_applied = True
 
-    # NEU: Erzwinge sofortigen Rerun, damit die gecachten Funktionen den neuen State sehen
+    st.session_state.data_applied = True
     st.rerun()
 
 
 def reset_filters():
     """Setzt alle Filter im Session State auf ihre Standardwerte zurück und wendet sie an."""
-    # 1. UI Keys zurücksetzen
     st.session_state['zeitraum_input'] = 'Gesamt'
     st.session_state['start_date_input'] = DEFAULT_START_DATE
     st.session_state['end_date_input'] = DEFAULT_END_DATE
-    st.session_state['kunde_input'] = []
+
+    # ÄNDERUNG 3: Reset auf None statt []
+    st.session_state['kunde_input'] = None
     st.session_state['produkt_input'] = []
     st.session_state['produkt_filter_exklusiv'] = False
 
-    # 2. Applied Keys sofort aktualisieren, um die Datenabfrage zu triggern
     apply_filters()
 
 
 def update_dates_on_period_change():
-    """
-    Callback-Funktion, die die Start- und Enddaten im Session State
-    aktualisiert, sobald die Zeitraum-Selectbox geändert wird.
-    """
+    """Callback-Funktion für Zeiträume."""
     zeitraum = st.session_state.get('zeitraum_input', 'Gesamt')
     current_end_date = date.today()
-
-    # Holen Sie sich das min_data_date aus dem Session State, falls es gesetzt wurde (nach Datenladung)
-    # Ansonsten Fallback auf den initialen Wert.
     min_data_date_fallback = st.session_state.get('min_data_date', DEFAULT_START_DATE)
 
     target_start_date = None
@@ -90,55 +84,44 @@ def update_dates_on_period_change():
     elif zeitraum == 'Letzte 30 Tage':
         target_start_date = current_end_date - timedelta(days=30)
     elif zeitraum == 'Gesamt':
-        # Bei 'Gesamt' die tatsächliche Min-Range verwenden
         target_start_date = min_data_date_fallback
         target_end_date = current_end_date
 
-        # Nur aktualisieren, wenn ein vordefinierter Zeitraum gewählt wurde
     if target_start_date is not None and zeitraum != 'Benutzerdefiniert':
         st.session_state['start_date_input'] = target_start_date
         st.session_state['end_date_input'] = target_end_date
 
 
 ########################################################################################################################
-# SQL
-
+# SQL Helper Functions
 #######################################################################################################################
-# --- HILFSFUNKTIONEN ZUM LADEN VON DATEN MIT EXPLIZITEM CACHING ---
 
 def _get_db_connection():
-    """Stellt die Datenbankverbindung her (wird NICHT gecached)."""
     server = os.environ.get('SERVER')
     database = os.environ.get('DATABASE')
     uid = os.environ.get('UID')
     pwd = os.environ.get('PWD')
 
     if not all([server, database, uid, pwd]):
-        st.error(
-            "Datenbank-Konfiguration fehlt! Bitte stellen Sie sicher, dass SERVER, DATABASE, UID und PWD in der .env-Datei gesetzt sind.")
+        st.error("Datenbank-Konfiguration fehlt!")
         return None
     try:
         connection_string = (
             "Driver={ODBC Driver 17 for SQL Server};"
-            f"Server={server};"
-            f"Database={database};"
-            f"UID={uid};"
-            f"PWD={pwd}"
+            f"Server={server};Database={database};UID={uid};PWD={pwd}"
         )
         return connection_string
     except Exception as e:
-        st.error(f"Fehler beim Erstellen des Connection Strings: {e}")
+        st.error(f"Fehler Connection String: {e}")
         return None
 
 
 @st.cache_data(ttl=600)
 def load_eventlog_data(customer_ids, start_date, end_date, material_ids, is_strict_inclusion):
-    """Lädt die Eventlog-Daten, Cache-Key ist die Liste der Argumente."""
     connection_string = _get_db_connection()
-    if not connection_string:
-        return pd.DataFrame()
+    if not connection_string: return pd.DataFrame()
 
-    # --- Parameter formatieren (liest direkt von den Funktionsargumenten) ---
+    # Logik: Leere Liste customer_ids bedeutet im SQL meist NULL -> Alle
     customer_id_param = f"'{','.join(map(str, customer_ids))}'" if customer_ids else "NULL"
     start_date_param = f"'{start_date.strftime('%Y-%m-%d')}'"
     end_date_param = f"'{end_date.strftime('%Y-%m-%d')}'"
@@ -162,18 +145,15 @@ def load_eventlog_data(customer_ids, start_date, end_date, material_ids, is_stri
             df['Datum'] = pd.to_datetime(df['Datum'])
         return df
     except pyodbc.Error as ex:
-        st.error(f"Fehler bei der Eventlog-Datenbankabfrage: {ex}")
+        st.error(f"Fehler Eventlog: {ex}")
         return pd.DataFrame()
 
 
 @st.cache_data(ttl=600)
 def load_kpi_data(customer_ids, start_date, end_date, material_ids, is_strict_inclusion):
-    """Lädt die KPI-Daten, Cache-Key ist die Liste der Argumente."""
     connection_string = _get_db_connection()
-    if not connection_string:
-        return pd.DataFrame()
+    if not connection_string: return pd.DataFrame()
 
-    # --- Parameter formatieren (liest direkt von den Funktionsargumenten) ---
     customer_id_param = f"'{','.join(map(str, customer_ids))}'" if customer_ids else "NULL"
     start_date_param = f"'{start_date.strftime('%Y-%m-%d')}'"
     end_date_param = f"'{end_date.strftime('%Y-%m-%d')}'"
@@ -194,24 +174,19 @@ def load_kpi_data(customer_ids, start_date, end_date, material_ids, is_strict_in
         with pyodbc.connect(connection_string) as connection:
             df = pd.read_sql(SQL_QUERY, connection)
         return df
-    except pyodbc.Error as ex:
-        # st.error(f"Fehler bei der KPI-Datenbankabfrage: {ex}")
+    except pyodbc.Error:
         return pd.DataFrame()
 
 
 @st.cache_data(ttl=600)
 def load_dfg_data(customer_ids, start_date, end_date, material_ids, is_strict_inclusion):
-    """Lädt die DFG-Daten (Directly-Follows Graph), Cache-Key ist die Liste der Argumente."""
     connection_string = _get_db_connection()
-    if not connection_string:
-        return pd.DataFrame()
+    if not connection_string: return pd.DataFrame()
 
-    # --- Parameter formatieren (liest direkt von den Funktionsargumenten) ---
     customer_id_param = f"'{','.join(map(str, customer_ids))}'" if customer_ids else "NULL"
     start_date_param = f"'{start_date.strftime('%Y-%m-%d')}'"
     end_date_param = f"'{end_date.strftime('%Y-%m-%d')}'"
     material_ids_list = [str(p).replace("'", "''") for p in material_ids]
-
     material_ids_param = f"'{','.join(material_ids_list)}'" if material_ids_list else "NULL"
     material_filter_mode_param = 1 if is_strict_inclusion else 0
 
@@ -229,96 +204,71 @@ def load_dfg_data(customer_ids, start_date, end_date, material_ids, is_strict_in
             df = pd.read_sql(SQL_QUERY, connection)
         return df
     except pyodbc.Error as ex:
-        st.error(f"Fehler bei der DFG-Datenbankabfrage: {ex}")
+        st.error(f"Fehler DFG: {ex}")
         return pd.DataFrame()
 
 
 @st.cache_data(ttl=3600)
 def load_lov_customers_data():
-    """
-    Lädt Kunden-IDs und Namen.
-    Rückgabe: (Liste der IDs, Dictionary {ID: Name})
-    """
     connection_string = _get_db_connection()
-    if not connection_string:
-        return [], {}
-
-    # SQL angepasst auf Select *
+    if not connection_string: return [], {}
     SQL_QUERY = "SELECT CUSTOMER_ID, CUSTOMER_LONG FROM LOV_CUSTOMER"
-
     try:
         with pyodbc.connect(connection_string) as connection:
             df = pd.read_sql(SQL_QUERY, connection)
-
-        if df.empty:
-            return [], {}
-
-        # 1. Liste aller IDs für die Auswahl-Optionen
+        if df.empty: return [], {}
         ids = df['CUSTOMER_ID'].tolist()
-
-        # 2. Dictionary für die Übersetzung ID -> Name
-        # Ergebnis: {1: '01 / BikePro...', 2: '02 / BikePro...'}
         mapping = pd.Series(df.CUSTOMER_LONG.values, index=df.CUSTOMER_ID).to_dict()
-
         return ids, mapping
-
     except Exception as ex:
-        st.error(f"Fehler beim Laden der Kunden-Liste: {ex}")
+        st.error(f"Fehler LOV Customer: {ex}")
         return [], {}
 
 
 @st.cache_data(ttl=3600)
 def load_lov_products_data():
-    """
-    Lädt Material-IDs und Beschreibungen.
-    Rückgabe: (Liste der IDs, Dictionary {ID: Name})
-    """
     connection_string = _get_db_connection()
-    if not connection_string:
-        return [], {}
-
+    if not connection_string: return [], {}
     SQL_QUERY = "exec dbo.process_analyzer_orchestrator @output = 'material'"
-
     try:
         with pyodbc.connect(connection_string) as connection:
             df = pd.read_sql(SQL_QUERY, connection)
-
-        if df.empty:
-            return [], {}
-
-        # Spaltennamen basierend auf deiner Info: ID_MAT und MAT_DESCR
+        if df.empty: return [], {}
         ids = df['ID_MAT'].tolist()
-
-        # Dictionary: {2: 'Cube Aim Disc', 3: 'Bulls Copperhead 3'}
         mapping = pd.Series(df.MAT_DESCR.values, index=df.ID_MAT).to_dict()
-
         return ids, mapping
-
     except Exception as ex:
-        st.error(f"Fehler beim Laden der Produkt-Liste: {ex}")
+        st.error(f"Fehler LOV Product: {ex}")
         return [], {}
+
+
 ########################################################################################################################
-# SQL - Rückgabe
+# Main Logic / Data Loading
 ########################################################################################################################
 
-# --- DATEN LADEN MIT APPLIED FILTERN ---
-
-# Initialisierung der DataFrames, falls noch keine Daten geladen wurden
 df_eventlog = pd.DataFrame()
 df_kpi = pd.DataFrame()
 df_dfg = pd.DataFrame()
 
-# Bedingte Ausführung: Führe SQL-Abfrage nur aus, wenn der Button gedrückt wurde
 if st.session_state.get('data_applied', False):
 
-    # Applied Parameter aus dem Session State lesen
-    applied_customer_ids = st.session_state.get('applied_kunde_input', [])
+    # Applied Parameter lesen
+    applied_single_customer = st.session_state.get('applied_kunde_input', None)
+
+    # ÄNDERUNG 4: Umwandlung Single Value -> List für SQL Funktion
+    # Wenn None -> Leere Liste (SQL interpretiert das als ALLE)
+    # Wenn Wert -> Liste mit einem Wert [ID]
+    if applied_single_customer is None:
+        applied_customer_ids = []
+    else:
+        applied_customer_ids = [applied_single_customer]
+
     applied_start_date = st.session_state.get('applied_start_date', DEFAULT_START_DATE)
     applied_end_date = st.session_state.get('applied_end_date', DEFAULT_END_DATE)
     applied_material_ids = st.session_state.get('applied_produkt_input', [])
     applied_is_strict_inclusion = st.session_state.get('applied_produkt_filter_exklusiv', False)
 
-    # DATEN LADEN: Alle Datensätze werden geladen
+    # DATEN LADEN
     df_eventlog = load_eventlog_data(
         customer_ids=applied_customer_ids,
         start_date=applied_start_date,
@@ -341,188 +291,116 @@ if st.session_state.get('data_applied', False):
         is_strict_inclusion=applied_is_strict_inclusion
     )
 
-    # Sicherstellen, dass die App bei leeren Eventlog-Daten nicht stoppt, sondern eine Warnung ausgibt
     if df_eventlog.empty:
-        st.warning(
-            "Es konnten keine Eventlog-Daten geladen werden (aufgrund zu restriktiver Filter).")
+        st.warning("Es konnten keine Eventlog-Daten geladen werden (zu restriktive Filter).")
 
-    # Sicherstellen, dass Umsatz numerisch ist, um Summen berechnen zu können
     if 'Umsatz' in df_eventlog.columns:
         df_eventlog['Umsatz'] = pd.to_numeric(df_eventlog['Umsatz'], errors='coerce').fillna(0)
 
 ########################################################################################################################
 # Frontend
 #######################################################################################################################
-# --- 2. Spaltendefinition ---
-col1, col2, col3 = st.columns([2, 2, 3])  # Spaltenverhältnis: 2:2:3
 
-# --- 3. Filter-Widgets (Innerhalb von col1) ---
+col1, col2, col3 = st.columns([2, 2, 3])
+
+# --- Filter Spalte ---
 with col1:
-    # UMWICKELT DEN INHALT MIT EINEM ST.CONTAINER FÜR EINHEITLICHES STYLING
     filter_container = st.container()
 
     with filter_container:
-        # DYNAMISCHES LADEN DER FILTEROPTIONEN
-
         customer_ids_options, customer_map = load_lov_customers_data()
         product_ids_options, product_map = load_lov_products_data()
 
-        # --- DATUM BERECHNUNG FÜR UI-ANZEIGE ---
         current_end_date = date.today()
-        # Fallback für minimales Datum
         min_data_date = df_eventlog[
-            'Datum'].min().date() if 'Datum' in df_eventlog.columns and 'Datum' in df_eventlog.dtypes and not df_eventlog.empty else DEFAULT_START_DATE
-
-        # Speichern des minimalen Datums im Session State für den Callback
+            'Datum'].min().date() if 'Datum' in df_eventlog.columns and not df_eventlog.empty else DEFAULT_START_DATE
         st.session_state['min_data_date'] = min_data_date
-
         zeitraum_selection = st.session_state.get('zeitraum_input', 'Gesamt')
 
-        # 1. FILTER TITEL
         st.markdown("<h2 style='text-align: center;'>Filter</h2>", unsafe_allow_html=True)
-
-        # --- ZEITRAUM FILTER (AUSSERHALB DES FORMS) ---
         st.markdown("#### **1. Zeitraum**", unsafe_allow_html=True)
 
-        # Selectbox für Zeitraum mit Callback zur sofortigen State-Aktualisierung
         st.selectbox(
             'Zeitraum auswählen',
             ['Gesamt', 'Letzte 7 Tage', 'Letzte 30 Tage', 'Benutzerdefiniert'],
             key='zeitraum_input',
-            on_change=update_dates_on_period_change,  # Callback
+            on_change=update_dates_on_period_change,
             index=['Gesamt', 'Letzte 7 Tage', 'Letzte 30 Tage', 'Benutzerdefiniert'].index(zeitraum_selection)
         )
 
-        # --- DATUMSFELDER SIND IMMER SICHTBAR (LESEN DEN AKTUELLEN STATE) ---
-        st.date_input(
-            'Startdatum',
-            value=st.session_state['start_date_input'],
-            min_value=min_data_date,
-            max_value=current_end_date,
-            key='start_date_input'
-        )
+        st.date_input('Startdatum', value=st.session_state['start_date_input'], min_value=min_data_date,
+                      max_value=current_end_date, key='start_date_input')
+        st.date_input('Enddatum', value=st.session_state['end_date_input'], min_value=min_data_date,
+                      max_value=current_end_date, key='end_date_input')
 
-        st.date_input(
-            'Enddatum',
-            value=st.session_state['end_date_input'],
-            min_value=min_data_date,
-            max_value=current_end_date,
-            key='end_date_input'
-        )
+        st.markdown("---")
 
-        st.markdown("---")  # Trennlinie
-
-        # 2. OPTIONALE FILTER (INNERHALB DES FORMS)
         with st.form(key='filter_form'):
-
-            # 2. OPTIONALE FILTER
-            st.markdown("#### **2. Weitere Filter**", unsafe_allow_html=True)  # Überschrift angepasst/verkleinert
+            st.markdown("#### **2. Weitere Filter**", unsafe_allow_html=True)
             st.markdown("Bitte weitere Filter wählen:")
 
-            # 2. Kunde (Multiselect)
+            # ÄNDERUNG 5: Kunde -> Selectbox (Single Select)
             st.markdown("##### Kunde", unsafe_allow_html=True)
-            st.multiselect(
+
+            # Wir fügen None als erste Option hinzu für "Alle Kunden"
+            options_with_all = [None] + customer_ids_options
+
+            st.selectbox(
                 'Kunde auswählen',
-                options=customer_ids_options,  # Die Box enthält technisch die IDs
-                format_func=lambda x: customer_map.get(x, str(x)),  # Zeigt aber den Namen an!
-                key='kunde_input'  # Speichert die gewählten IDs im State
+                options=options_with_all,
+                # Formatierung: Wenn x None ist, zeige "Alle Kunden", sonst Mapping aus DB
+                format_func=lambda x: "Alle Kunden (Standard)" if x is None else customer_map.get(x, str(x)),
+                key='kunde_input'  # Speichert einzelne ID oder None
             )
 
-            # 3. Produkte (Multiselect)
+            # Produkte bleibt Multiselect
             st.markdown("##### Produkt", unsafe_allow_html=True)
             st.multiselect(
                 'Wähle ein Produkt',
-                options=product_ids_options,  # Die Box enthält technisch die IDs
-                format_func=lambda x: product_map.get(x, str(x)),  # Zeigt aber den Namen an!
-                key='produkt_input'  # Speichert die gewählten IDs im State
+                options=product_ids_options,
+                format_func=lambda x: product_map.get(x, str(x)),
+                key='produkt_input'
             )
 
-            st.checkbox(
-                "Strikte Inklusion",
-                value=False,
-                key='produkt_filter_exklusiv'
-            )
-
+            st.checkbox("Strikte Inklusion", value=False, key='produkt_filter_exklusiv')
             st.markdown("---")
-
             submit_button = st.form_submit_button(label='Filter anwenden')
 
-        # NEUE LOGIK: Führt apply_filters() NUR aus, wenn der Submit Button gedrückt wurde
         if submit_button:
             apply_filters()
-            # KORREKTUR: Erzwinge sofortigen Rerun, um das "Zwei-Klick"-Problem zu lösen
             st.rerun()
 
-        # --- BUTTONS NEBENEINANDER (MUSS AUSSERHALB DES FORMS SEIN) ---
-        # st.button ruft reset_filters auf, was wiederum apply_filters aufruft
         st.button("Filter zurücksetzen", on_click=reset_filters, key='reset_button')
 
-# --- 5. Filter-Anwendungslogik (ENTFERNT, DA IN DB AUSGEFÜHRT) ---
-
-# filtered_df ist nun df_eventlog
 filtered_df = df_eventlog.copy()
 
-########################################################################################################################
-
+# --- Mittelspalte (KPIs) ---
 with col2:
-    # Beginnt den zentrierten Container für col2
     st.markdown("<div class='center-col-content'>", unsafe_allow_html=True)
-
-    # st.markdown("<h3 style='text-align: center;'>Zusammenfassung</h3>", unsafe_allow_html=True)
-    st.metric(
-        label="Gefilterte Datensätze",
-        value=f"{len(filtered_df):,}",
-        delta=None,  # Delta entfernt, da wir die ungefilterte Größe nicht mehr sinnvoll vergleichen können
-        delta_color="off"
-    )
-
-    # Sicherstellen, dass Umsatz existiert, bevor sum() aufgerufen wird
+    st.metric(label="Gefilterte Datensätze", value=f"{len(filtered_df):,}", delta=None, delta_color="off")
     total_sales = filtered_df['Umsatz'].sum() if 'Umsatz' in filtered_df.columns else 0
-
-    st.metric(
-        label="Gesamtumsatz (gefiltert)",
-        value=f"€{total_sales:,.2f}"
-    )
+    #st.metric(label="Gesamtumsatz (gefiltert)", value=f"€{total_sales:,.2f}")
 
     with st.expander("Eventlog-Vorschau"):
-        # Der DataFrame ist nun optional aufklappbar
-        st.dataframe(
-            filtered_df,  # Zeigt nun den gesamten DataFrame an
-            width='stretch',
-            hide_index=True
-        )
-
-    # Schließt den zentrierten Container für col2
+        st.dataframe(filtered_df, width='stretch', hide_index=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
-########################################################################################################################
-
+# --- Rechte Spalte (Visuals) ---
 with col3:
-    # Beginnt den zentrierten Container für col3
     st.markdown("<div class='center-col-content'>", unsafe_allow_html=True)
-
-    # 1. Prozess-Scorecard (Tabelle)
-    # ZENTRIERTE UNTERÜBERSCHRIFT
     st.markdown("<h3 style='text-align: center;'>KPI - Zielerreichung</h3>", unsafe_allow_html=True)
 
-    # Erstellung des simulierten DataFrames für die Prozess-Tabelle (KPI-Daten werden verwendet)
-    # HINWEIS: Hier müsste nun df_kpi verwendet werden, falls die Struktur passt
-    # Da wir KPI-Daten ignorieren sollten (Ihre Anweisung), belassen wir die simulierte Tabelle.
-    # Wenn df_kpi verwendet werden soll, müsste hier die df_kpi Tabelle hinein: process_df = df_kpi.copy()
     process_data = {
         'Kennzahl': ['Prozesskennzahl 1', 'Prozesskennzahl 2', 'Prozesskennzahl 3', 'Prozesskennzahl 4'],
-        'Einheit': ['h', 'h', 'h', 'h'],  # Einheit von % auf h geändert
+        'Einheit': ['h', 'h', 'h', 'h'],
         'Toleranz unten': [70.00, 70.00, 70.00, 70.00],
         'Ziel': [100.00, 100.00, 100.00, 100.00],
         'Ist': [60.00, 70.00, 100.00, 110.00],
     }
     process_df = pd.DataFrame(process_data)
-
-    # Berechnung der Zielerreichung
     process_df['Zielerreichung'] = (process_df['Ist'] / process_df['Ziel'])
     process_df['Bewertung'] = "🟢"
 
-    # Anzeige der Tabelle mit Formatierung
     st.dataframe(
         process_df.style.format({
             'Toleranz unten': "{:.2f}",
@@ -530,51 +408,33 @@ with col3:
             'Ist': "{:.2f}",
             'Zielerreichung': "{:.2%}"
         }),
-        width='stretch',  # KORREKTUR: use_container_width=True -> width='stretch'
+        width='stretch',
         hide_index=True,
-        column_config={
-            "Bewertung": st.column_config.Column(
-                label="",
-                width="tiny"
-            )
-        }
+        column_config={"Bewertung": st.column_config.Column(label="", width="tiny")}
     )
 
-    # 2. DFG-Visualisierung (NUR GRAPH, KEINE TABELLE)
     st.markdown("<h3 style='text-align: center;'>DFG - Prozessfluss</h3>", unsafe_allow_html=True)
 
     if not df_dfg.empty:
-        # Netzwerkdiagramm mit Plotly
         try:
             import plotly.graph_objects as go
 
-            # Erstelle Netzwerkgraph
             fig = go.Figure()
-
-            # Knoten sammeln
             nodes = set()
             for _, row in df_dfg.iterrows():
                 nodes.add(row['From_Activity'])
                 nodes.add(row['To_Activity'])
-
             nodes_list = list(nodes)
             node_indices = {node: i for i, node in enumerate(nodes_list)}
 
-            # Edges hinzufügen (NUR Linien, keine permanenten Labels)
             for _, row in df_dfg.iterrows():
                 from_idx = node_indices[row['From_Activity']]
                 to_idx = node_indices[row['To_Activity']]
+                x_from, y_from = (from_idx % 5) * 100, (from_idx // 5) * 100
+                x_to, y_to = (to_idx % 5) * 100, (to_idx // 5) * 100
 
-                # Berechne Position (einfaches Layout)
-                x_from = (from_idx % 5) * 100
-                y_from = (from_idx // 5) * 100
-                x_to = (to_idx % 5) * 100
-                y_to = (to_idx // 5) * 100
-
-                # Zeichne Kante mit Hover-Info (OHNE None am Ende!)
                 fig.add_trace(go.Scatter(
-                    x=[x_from, x_to],
-                    y=[y_from, y_to],
+                    x=[x_from, x_to], y=[y_from, y_to],
                     mode='lines',
                     line=dict(width=max(2, row['Frequency'] / 10), color='lightblue'),
                     showlegend=False,
@@ -583,72 +443,33 @@ with col3:
                     hoverlabel=dict(bgcolor="white", font_size=12)
                 ))
 
-            # Knoten hinzufügen
             for i, node in enumerate(nodes_list):
-                x = (i % 5) * 100
-                y = (i // 5) * 100
+                x, y = (i % 5) * 100, (i // 5) * 100
                 fig.add_trace(go.Scatter(
-                    x=[x],
-                    y=[y],
-                    mode='markers+text',
+                    x=[x], y=[y], mode='markers+text',
                     marker=dict(size=20, color='lightcoral'),
-                    text=node,
-                    textposition='top center',
-                    showlegend=False,
-                    hoverinfo='skip'  # Kein Hover auf Knoten
+                    text=node, textposition='top center',
+                    showlegend=False, hoverinfo='skip'
                 ))
-
             fig.update_layout(
-                height=500,
-                showlegend=False,
+                height=500, showlegend=False,
                 xaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
                 yaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
                 margin=dict(l=20, r=20, t=20, b=20)
             )
-
             st.plotly_chart(fig, use_container_width=True)
-
         except ImportError:
-            st.error("⚠️ Plotly ist nicht installiert!")
-            st.info("Bitte installiere Plotly mit: pip install plotly==5.24.1")
-            st.code("""
-# Versuche eine dieser Optionen:
-pip install plotly==5.24.1
-python -m pip install plotly==5.24.1
-pip install --user plotly==5.24.1
-
-# Prüfe welches Python Streamlit verwendet:
-import sys
-print(sys.executable)
-            """, language="bash")
-
+            st.error("Plotly ist nicht installiert.")
     else:
-        st.warning("Keine DFG-Daten verfügbar. Bitte wenden Sie Filter an oder prüfen Sie die Datenbasis.")
+        st.warning("Keine DFG-Daten verfügbar.")
 
-    st.caption(f"Anzeige der Visualisierungen basierend auf {len(filtered_df)} von {len(df_eventlog)} Datensätzen.")
-
-    # Schließt den zentrierten Container für col3
+    st.caption(f"Anzeige basierend auf {len(filtered_df)} Datensätzen.")
     st.markdown("</div>", unsafe_allow_html=True)
 
-########################################################################################################################
-
-# CSS für Zentrierung (optionales Styling aus dem Originalcode)
 st.markdown("""
 <style>
-.center-col-content {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-}
-.stMetric > div:nth-child(1) {
-    font-size: 1.2rem;
-    font-weight: 500;
-}
-/* NEU: Entfernt die Umrandung des st.form-Elements */
-div[data-testid="stForm"] {
-    border: none !important;
-    padding: 0 !important; /* Optional: Entfernt auch das Standard-Padding, falls vorhanden */
-}
+.center-col-content { display: flex; flex-direction: column; align-items: center; text-align: center; }
+.stMetric > div:nth-child(1) { font-size: 1.2rem; font-weight: 500; }
+div[data-testid="stForm"] { border: none !important; padding: 0 !important; }
 </style>
 """, unsafe_allow_html=True)
