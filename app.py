@@ -297,6 +297,8 @@ def load_lov_products_data():
     except Exception as ex:
         st.error(f"Fehler beim Laden der Produkt-Liste: {ex}")
         return [], {}
+
+
 ########################################################################################################################
 # SQL - Rückgabe
 ########################################################################################################################
@@ -414,7 +416,6 @@ with col1:
 
         # 2. OPTIONALE FILTER (INNERHALB DES FORMS)
         with st.form(key='filter_form'):
-
             # 2. OPTIONALE FILTER
             st.markdown("#### **2. Weitere Filter**", unsafe_allow_html=True)  # Überschrift angepasst/verkleinert
             st.markdown("Bitte weitere Filter wählen:")
@@ -548,68 +549,625 @@ with col3:
         try:
             import plotly.graph_objects as go
 
-            # Erstelle Netzwerkgraph
+            # Kategorien und Farben definieren
+            categories = ['SALESOFFER', 'SALESORDER', 'DELIVERY', 'INVOICE', 'PAYMENT']
+            category_colors = {
+                'SALESOFFER': '#4A90E2',  # Blau
+                'SALESORDER': '#7ED321',  # Grün
+                'DELIVERY': '#F5A623',  # Orange
+                'INVOICE': '#BD10E0',  # Lila
+                'PAYMENT': '#50E3C2'  # Türkis
+            }
+
+
+            # Funktion zum Extrahieren der Kategorie aus dem Activity-Namen
+            def get_category(activity):
+                for cat in categories:
+                    if activity.startswith(cat):
+                        return cat
+                return 'UNKNOWN'
+
+
+            # Funktion zum Extrahieren des Status aus dem Activity-Namen
+            def get_status(activity):
+                parts = activity.split('_')
+                if len(parts) > 1:
+                    return '_'.join(parts[1:])
+                return ''
+
+
+            # Hilfsfunktion zur Berechnung des Randpunkts eines Rechtecks
+            def calculate_edge_intersection(x_center, y_center, x_target, y_target, node_width, node_height):
+                """
+                Berechnet den Punkt am Rand eines Rechtecks, wo die Linie vom Zentrum
+                zum Zielpunkt das Rechteck verlässt bzw. eintritt.
+                """
+                # Richtungsvektor
+                dx = x_target - x_center
+                dy = y_target - y_center
+
+                # Spezialfälle: keine Bewegung
+                if dx == 0 and dy == 0:
+                    return x_center, y_center
+
+                # Berechne t-Werte für horizontale und vertikale Kanten
+                if dx == 0:
+                    # Vertikale Linie
+                    edge_x = x_center
+                    edge_y = y_center + (node_height / 2 if dy > 0 else -node_height / 2)
+                elif dy == 0:
+                    # Horizontale Linie
+                    edge_x = x_center + (node_width / 2 if dx > 0 else -node_width / 2)
+                    edge_y = y_center
+                else:
+                    # Berechne das Verhältnis für beide Achsen
+                    t_x = (node_width / 2) / abs(dx)
+                    t_y = (node_height / 2) / abs(dy)
+
+                    # Nimm das kleinere t (das ist der erste Schnittpunkt mit dem Rechteck)
+                    t = min(t_x, t_y)
+
+                    edge_x = x_center + t * dx
+                    edge_y = y_center + t * dy
+
+                return edge_x, edge_y
+
+
+            def line_intersects_rectangle(x1, y1, x2, y2, rect_x, rect_y, rect_width, rect_height):
+                """
+                Prüft, ob eine Linie von (x1,y1) nach (x2,y2) durch ein Rechteck geht.
+                Rechteck ist definiert durch Mittelpunkt (rect_x, rect_y) und Dimensionen.
+                """
+                # Erweitere Rechteck leicht für bessere Erkennung
+                margin = 5
+                rect_left = rect_x - rect_width / 2 - margin
+                rect_right = rect_x + rect_width / 2 + margin
+                rect_top = rect_y - rect_height / 2 - margin
+                rect_bottom = rect_y + rect_height / 2 + margin
+
+                # Prüfe ob Liniensegment das Rechteck schneidet (Liang-Barsky Algorithmus vereinfacht)
+                # Prüfe ob mindestens ein Endpunkt im Rechteck liegt
+                def point_in_rect(px, py):
+                    return rect_left <= px <= rect_right and rect_top <= py <= rect_bottom
+
+                # Wenn einer der Endpunkte im Rechteck ist, gibt es eine Kollision
+                # (außer es ist der Ziel- oder Start-Knoten selbst)
+                if point_in_rect(x1, y1) or point_in_rect(x2, y2):
+                    # Prüfe ob es der Mittelpunkt des Rechtecks selbst ist
+                    tolerance = rect_width / 2 + 1
+                    if (abs(x1 - rect_x) < tolerance and abs(y1 - rect_y) < tolerance):
+                        return False  # Startknoten
+                    if (abs(x2 - rect_x) < tolerance and abs(y2 - rect_y) < tolerance):
+                        return False  # Zielknoten
+                    return True
+
+                # Prüfe ob Linie durch Rechteck geht (vereinfachte Version)
+                # Berechne parametrische Form der Linie: P = P1 + t*(P2-P1)
+                dx = x2 - x1
+                dy = y2 - y1
+
+                # Prüfe Schnittpunkte mit allen vier Kanten
+                if dx != 0:
+                    # Linke Kante
+                    t = (rect_left - x1) / dx
+                    if 0 < t < 1:
+                        y = y1 + t * dy
+                        if rect_top <= y <= rect_bottom:
+                            return True
+                    # Rechte Kante
+                    t = (rect_right - x1) / dx
+                    if 0 < t < 1:
+                        y = y1 + t * dy
+                        if rect_top <= y <= rect_bottom:
+                            return True
+
+                if dy != 0:
+                    # Obere Kante
+                    t = (rect_top - y1) / dy
+                    if 0 < t < 1:
+                        x = x1 + t * dx
+                        if rect_left <= x <= rect_right:
+                            return True
+                    # Untere Kante
+                    t = (rect_bottom - y1) / dy
+                    if 0 < t < 1:
+                        x = x1 + t * dx
+                        if rect_left <= x <= rect_right:
+                            return True
+
+                return False
+
+
+            def calculate_curved_path(x1, y1, x2, y2, all_obstacles, node_width, node_height):
+                """
+                Berechnet einen gebogenen Pfad, wenn die direkte Linie durch Knoten geht.
+                Gibt Kontrollpunkte für eine Bezier-Kurve zurück.
+                """
+                # Prüfe ob direkte Linie Knoten schneidet
+                has_collision = False
+                collision_points = []
+
+                for obs_node, (obs_x, obs_y) in all_obstacles.items():
+                    if line_intersects_rectangle(x1, y1, x2, y2, obs_x, obs_y, node_width, node_height):
+                        has_collision = True
+                        collision_points.append((obs_x, obs_y))
+
+                if not has_collision:
+                    # Keine Kollision - direkte Linie
+                    return None
+
+                # Berechne Kontrollpunkt für Kurve
+                # Mittelpunkt der Linie
+                mid_x = (x1 + x2) / 2
+                mid_y = (y1 + y2) / 2
+
+                # Richtung der Linie
+                dx = x2 - x1
+                dy = y2 - y1
+                length = (dx ** 2 + dy ** 2) ** 0.5
+
+                if length == 0:
+                    return None
+
+                # Normalisierter Vektor senkrecht zur Linie
+                perp_x = -dy / length
+                perp_y = dx / length
+
+                # Verschiebe Kontrollpunkt seitlich (30-50 Pixel)
+                offset = 50
+
+                # Prüfe beide Seiten und wähle die mit weniger Kollisionen
+                ctrl1_x = mid_x + offset * perp_x
+                ctrl1_y = mid_y + offset * perp_y
+                ctrl2_x = mid_x - offset * perp_x
+                ctrl2_y = mid_y - offset * perp_y
+
+                # Zähle Kollisionen für beide Optionen
+                collisions1 = sum(1 for obs_node, (obs_x, obs_y) in all_obstacles.items()
+                                  if line_intersects_rectangle(x1, y1, ctrl1_x, ctrl1_y, obs_x, obs_y, node_width,
+                                                               node_height)
+                                  or line_intersects_rectangle(ctrl1_x, ctrl1_y, x2, y2, obs_x, obs_y, node_width,
+                                                               node_height))
+
+                collisions2 = sum(1 for obs_node, (obs_x, obs_y) in all_obstacles.items()
+                                  if line_intersects_rectangle(x1, y1, ctrl2_x, ctrl2_y, obs_x, obs_y, node_width,
+                                                               node_height)
+                                  or line_intersects_rectangle(ctrl2_x, ctrl2_y, x2, y2, obs_x, obs_y, node_width,
+                                                               node_height))
+
+                # Wähle die Seite mit weniger Kollisionen
+                if collisions1 <= collisions2:
+                    ctrl_x, ctrl_y = ctrl1_x, ctrl1_y
+                else:
+                    ctrl_x, ctrl_y = ctrl2_x, ctrl2_y
+
+                return (ctrl_x, ctrl_y)
+
+
+            # Knoten sammeln und kategorisieren
+            nodes_by_category = {cat: [] for cat in categories}
+            all_nodes = set()
+
+            for _, row in df_dfg.iterrows():
+                all_nodes.add(row['From_Activity'])
+                all_nodes.add(row['To_Activity'])
+
+            for node in all_nodes:
+                cat = get_category(node)
+                if cat in nodes_by_category:
+                    nodes_by_category[cat].append(node)
+
+            # Sortiere Knoten innerhalb jeder Kategorie
+            for cat in categories:
+                nodes_by_category[cat].sort()
+
+            # Berechne Positionen für optimale Raumnutzung
+            # Horizontaler Abstand zwischen Kategorien
+            h_spacing = 200
+            # Vertikaler Abstand zwischen Status (angepasst für 100x50 Knoten)
+            v_spacing = 90
+
+            # Finde maximale Anzahl von Status in einer Kategorie
+            max_statuses = max([len(nodes) for nodes in nodes_by_category.values()]) if any(
+                nodes_by_category.values()) else 1
+
+            # Positionierung der Knoten
+            node_positions = {}
+            for cat_idx, cat in enumerate(categories):
+                x = cat_idx * h_spacing
+                nodes_in_cat = nodes_by_category[cat]
+
+                # Zentriere vertikal wenn weniger Status als max
+                y_offset = (max_statuses - len(nodes_in_cat)) * v_spacing / 2
+
+                for node_idx, node in enumerate(nodes_in_cat):
+                    y = node_idx * v_spacing + y_offset
+                    node_positions[node] = (x, y)
+
+            # Erstelle Figure
             fig = go.Figure()
 
-            # Knoten sammeln
-            nodes = set()
+            # Knotenabmessungen (Mittelweg für gute Balance)
+            node_width = 100
+            node_height = 50
+
+            # BIDIREKTIONALE PFEILE ERKENNEN
+            # Finde alle Paare (A→B und B→A), die übereinander liegen würden
+            bidirectional_edges = set()
             for _, row in df_dfg.iterrows():
-                nodes.add(row['From_Activity'])
-                nodes.add(row['To_Activity'])
+                from_node = row['From_Activity']
+                to_node = row['To_Activity']
 
-            nodes_list = list(nodes)
-            node_indices = {node: i for i, node in enumerate(nodes_list)}
+                # Prüfe ob es auch einen Pfeil in die andere Richtung gibt
+                reverse_exists = df_dfg[
+                                     (df_dfg['From_Activity'] == to_node) &
+                                     (df_dfg['To_Activity'] == from_node)
+                                     ].shape[0] > 0
 
-            # Edges hinzufügen (NUR Linien, keine permanenten Labels)
+                if reverse_exists and from_node != to_node:  # Nicht bei Self-Loops
+                    # Speichere beide Richtungen als bidirektional
+                    bidirectional_edges.add((from_node, to_node))
+                    bidirectional_edges.add((to_node, from_node))
+
+            # Zeichne Edges (Pfeile) mit Frequency-Labels
+            annotations = []
             for _, row in df_dfg.iterrows():
-                from_idx = node_indices[row['From_Activity']]
-                to_idx = node_indices[row['To_Activity']]
+                from_node = row['From_Activity']
+                to_node = row['To_Activity']
+                frequency = row['Frequency']
 
-                # Berechne Position (einfaches Layout)
-                x_from = (from_idx % 5) * 100
-                y_from = (from_idx // 5) * 100
-                x_to = (to_idx % 5) * 100
-                y_to = (to_idx // 5) * 100
+                if from_node in node_positions and to_node in node_positions:
+                    x_from_center, y_from_center = node_positions[from_node]
+                    x_to_center, y_to_center = node_positions[to_node]
 
-                # Zeichne Kante mit Hover-Info (OHNE None am Ende!)
-                fig.add_trace(go.Scatter(
-                    x=[x_from, x_to],
-                    y=[y_from, y_to],
-                    mode='lines',
-                    line=dict(width=max(2, row['Frequency'] / 10), color='lightblue'),
-                    showlegend=False,
-                    text=f"{row['From_Activity']} → {row['To_Activity']}<br>Häufigkeit: {row['Frequency']}",
-                    hoverinfo='text',
-                    hoverlabel=dict(bgcolor="white", font_size=12)
+                    # Prüfe ob dieser Edge bidirektional ist
+                    is_bidirectional = (from_node, to_node) in bidirectional_edges
+
+                    # SELF-LOOP: Task folgt auf sich selbst
+                    if from_node == to_node:
+                        # Zeichne GRÖßERE, RUNDE Schleife in der linken oberen Ecke
+                        loop_size = 30  # Größer für bessere Sichtbarkeit
+
+                        # WICHTIG: In Plotly sind GRÖSSERE Y-Werte OBEN!
+                        # Startpunkt: Links am OBEREN Rand
+                        start_x = x_from_center - node_width / 2
+                        start_y = y_from_center + node_height / 2 - 5
+
+                        # Endpunkt: OBEN am linken Rand
+                        end_x = x_from_center - node_width / 2 + 5
+                        end_y = y_from_center + node_height / 2
+
+                        # Kontrollpunkte für RUNDE Schleife (weiter weg = runder)
+                        ctrl1_x = start_x - loop_size * 0.8
+                        ctrl1_y = start_y + loop_size * 0.4  # Weniger steil für rundere Form
+
+                        ctrl2_x = end_x - loop_size * 0.4  # Weniger stark gekrümmt
+                        ctrl2_y = end_y + loop_size * 0.8
+
+                        # Erzeuge Punkte für kubische Bezier-Kurve
+                        num_points = 50
+                        curve_x = []
+                        curve_y = []
+
+                        for i in range(num_points + 1):
+                            t = i / num_points
+                            # Kubische Bezier: B(t) = (1-t)³P0 + 3(1-t)²tP1 + 3(1-t)t²P2 + t³P3
+                            x = (1 - t) ** 3 * start_x + 3 * (1 - t) ** 2 * t * ctrl1_x + 3 * (
+                                        1 - t) * t ** 2 * ctrl2_x + t ** 3 * end_x
+                            y = (1 - t) ** 3 * start_y + 3 * (1 - t) ** 2 * t * ctrl1_y + 3 * (
+                                        1 - t) * t ** 2 * ctrl2_y + t ** 3 * end_y
+                            curve_x.append(x)
+                            curve_y.append(y)
+
+                        # Zeichne die Schleife
+                        fig.add_trace(go.Scatter(
+                            x=curve_x[:-3],
+                            y=curve_y[:-3],
+                            mode='lines',
+                            line=dict(
+                                width=1.5,
+                                color='rgba(100, 100, 100, 0.8)'
+                            ),
+                            showlegend=False,
+                            hoverinfo='skip'
+                        ))
+
+                        # Pfeil am Ende der Schleife
+                        annotations.append(dict(
+                            x=curve_x[-1],
+                            y=curve_y[-1],
+                            ax=curve_x[-6] if len(curve_x) > 6 else curve_x[-2],
+                            ay=curve_y[-6] if len(curve_y) > 6 else curve_y[-2],
+                            xref='x',
+                            yref='y',
+                            axref='x',
+                            ayref='y',
+                            showarrow=True,
+                            arrowhead=2,
+                            arrowsize=1.5,
+                            arrowwidth=1.5,
+                            arrowcolor='rgba(100, 100, 100, 0.8)'
+                        ))
+
+                        # Frequency-Label AUF dem Pfeil (am höchsten Punkt der Kurve)
+                        mid_idx = len(curve_x) // 2
+                        label_x = curve_x[mid_idx]
+                        label_y = curve_y[mid_idx]
+
+                        annotations.append(dict(
+                            x=label_x,
+                            y=label_y,
+                            text=f'<b>{frequency}</b>',
+                            showarrow=False,
+                            font=dict(size=10, color='black'),
+                            bgcolor='rgba(255, 255, 255, 0.8)',
+                            bordercolor='rgba(0, 0, 0, 0.3)',
+                            borderwidth=1,
+                            borderpad=2
+                        ))
+
+                        # Springe zur nächsten Edge (Self-Loop ist fertig)
+                        continue
+
+                    # NORMALE EDGES (nicht Self-Loop)
+                    # Berechne Start- und Endpunkte am Rand der Knoten
+                    x_from, y_from = calculate_edge_intersection(
+                        x_from_center, y_from_center,
+                        x_to_center, y_to_center,
+                        node_width, node_height
+                    )
+
+                    x_to, y_to = calculate_edge_intersection(
+                        x_to_center, y_to_center,
+                        x_from_center, y_from_center,
+                        node_width, node_height
+                    )
+
+                    # BIDIREKTIONALER OFFSET
+                    # Wenn Pfeile in beide Richtungen gehen, verschiebe sie parallel
+                    if is_bidirectional:
+                        # Berechne die Richtung der Verbindung
+                        dx = x_to_center - x_from_center
+                        dy = y_to_center - y_from_center
+                        length = (dx ** 2 + dy ** 2) ** 0.5
+
+                        if length > 0:
+                            # Senkrechter Vektor (nach rechts gedreht)
+                            perp_x = -dy / length
+                            perp_y = dx / length
+
+                            # Offset-Distanz (6 Pixel)
+                            offset = 6
+
+                            # Verschiebe beide Punkte senkrecht zur Verbindung
+                            x_from += perp_x * offset
+                            y_from += perp_y * offset
+                            x_to += perp_x * offset
+                            y_to += perp_y * offset
+
+                    # Prüfe auf Kollisionen mit anderen Knoten
+                    obstacles = {n: pos for n, pos in node_positions.items()
+                                 if n != from_node and n != to_node}
+
+                    control_point = calculate_curved_path(
+                        x_from, y_from, x_to, y_to,
+                        obstacles, node_width, node_height
+                    )
+
+                    if control_point is not None:
+                        # Zeichne gebogene Linie (quadratische Bezier-Kurve)
+                        ctrl_x, ctrl_y = control_point
+
+                        # Erzeuge Punkte entlang der Bezier-Kurve
+                        num_points = 50
+                        curve_x = []
+                        curve_y = []
+
+                        for i in range(num_points + 1):
+                            t = i / num_points
+                            # Quadratische Bezier-Formel: B(t) = (1-t)²P0 + 2(1-t)tP1 + t²P2
+                            x = (1 - t) ** 2 * x_from + 2 * (1 - t) * t * ctrl_x + t ** 2 * x_to
+                            y = (1 - t) ** 2 * y_from + 2 * (1 - t) * t * ctrl_y + t ** 2 * y_to
+                            curve_x.append(x)
+                            curve_y.append(y)
+
+                        # Zeichne nur die Kurve ohne Pfeil (Pfeil kommt als Annotation)
+                        fig.add_trace(go.Scatter(
+                            x=curve_x[:-3],  # Stoppe kurz vor dem Ende
+                            y=curve_y[:-3],
+                            mode='lines',
+                            line=dict(
+                                width=1.5,  # Konstante Breite für alle Pfeile
+                                color='rgba(100, 100, 100, 0.8)'
+                            ),
+                            showlegend=False,
+                            hoverinfo='skip'
+                        ))
+
+                        # Pfeil-Annotation für das Ende der Kurve
+                        arrow_end_idx = -1
+                        arrow_start_idx = -5 if len(curve_x) > 5 else -2
+
+                        annotations.append(dict(
+                            x=curve_x[arrow_end_idx],
+                            y=curve_y[arrow_end_idx],
+                            ax=curve_x[arrow_start_idx],
+                            ay=curve_y[arrow_start_idx],
+                            xref='x',
+                            yref='y',
+                            axref='x',
+                            ayref='y',
+                            showarrow=True,
+                            arrowhead=2,
+                            arrowsize=1.5,
+                            arrowwidth=1.5,  # Konstante Breite für alle Pfeile
+                            arrowcolor='rgba(100, 100, 100, 0.8)'
+                        ))
+
+                        # Frequency-Label in der Mitte der Kurve
+                        mid_x = curve_x[len(curve_x) // 2]
+                        mid_y = curve_y[len(curve_y) // 2]
+
+                        # Füge Frequency-Label hinzu
+                        annotations.append(dict(
+                            x=mid_x,
+                            y=mid_y,
+                            text=f'<b>{frequency}</b>',
+                            showarrow=False,
+                            font=dict(size=10, color='black'),
+                            bgcolor='rgba(255, 255, 255, 0.8)',
+                            bordercolor='rgba(0, 0, 0, 0.3)',
+                            borderwidth=1,
+                            borderpad=2
+                        ))
+
+                    else:
+                        # Zeichne geraden Pfeil (keine Kollision)
+                        # Verwende Arrow-Annotation als komplette Linie (kein separates Scatter)
+                        annotations.append(dict(
+                            x=x_to,
+                            y=y_to,
+                            ax=x_from,
+                            ay=y_from,
+                            xref='x',
+                            yref='y',
+                            axref='x',
+                            ayref='y',
+                            showarrow=True,
+                            arrowhead=2,
+                            arrowsize=1.5,
+                            arrowwidth=1.5,  # Konstante Breite für alle Pfeile
+                            arrowcolor='rgba(100, 100, 100, 0.8)'
+                        ))
+
+                        # Frequency-Label in der Mitte
+                        mid_x = (x_from + x_to) / 2
+                        mid_y = (y_from + y_to) / 2
+
+                        # Füge Frequency-Label hinzu
+                        annotations.append(dict(
+                            x=mid_x,
+                            y=mid_y,
+                            text=f'<b>{frequency}</b>',
+                            showarrow=False,
+                            font=dict(size=10, color='black'),
+                            bgcolor='rgba(255, 255, 255, 0.8)',
+                            bordercolor='rgba(0, 0, 0, 0.3)',
+                            borderwidth=1,
+                            borderpad=2
+                        ))
+
+            # Zeichne Knoten als Rechtecke (Shapes) mit Text
+            shapes = []
+            for node, (x, y) in node_positions.items():
+                cat = get_category(node)
+                status = get_status(node)
+                color = category_colors.get(cat, '#999999')
+
+                # Füge Rechteck als Shape hinzu (verwendet node_width und node_height von oben)
+                shapes.append(dict(
+                    type='rect',
+                    x0=x - node_width / 2,
+                    y0=y - node_height / 2,
+                    x1=x + node_width / 2,
+                    y1=y + node_height / 2,
+                    fillcolor=color,
+                    line=dict(color='white', width=2),
+                    layer='below'
                 ))
 
-            # Knoten hinzufügen
-            for i, node in enumerate(nodes_list):
-                x = (i % 5) * 100
-                y = (i // 5) * 100
+
+                # Füge Text-Annotation für jeden Knoten hinzu
+                # Kategorie (fett) über Status
+
+                # Dynamische Schriftgröße - SEHR KONSERVATIV für alle Fenstergrößen
+                def calculate_font_size(text, actual_node_width):
+                    """Berechnet optimale Schriftgröße für Text im Knoten."""
+                    if not text:
+                        return 7
+
+                    # Entferne HTML-Tags für Längenberechnung
+                    clean_text = text.replace('<b>', '').replace('</b>', '').replace('<br>', '\n')
+
+                    # Finde längste Zeile
+                    lines = clean_text.split('\n')
+                    max_line_length = max(len(line) for line in lines)
+
+                    # SEHR KONSERVATIVE Berechnung mit großem Sicherheitspuffer
+                    # Da Plotly die Knoten skaliert, aber Schrift absolut ist,
+                    # müssen wir sehr vorsichtig sein
+
+                    # Verfügbare Breite: nur 70% der Knotenbreite nutzen
+                    available_width = actual_node_width * 0.7
+
+                    # Berechne mit großem Sicherheitsfaktor (0.7 statt 0.6)
+                    optimal_size = available_width / (max_line_length * 0.7)
+
+                    # Sehr enge Grenzen für Sicherheit
+                    # Bei 80px: max 8pt (nicht mehr!)
+                    min_size = 5
+                    max_size = 8  # Reduziert von 9
+
+                    font_size = max(min_size, min(max_size, optimal_size))
+
+                    return int(font_size)
+
+
+                if status:
+                    display_text = f'<b>{cat}</b><br>{status}'
+                else:
+                    display_text = f'<b>{cat}</b>'
+
+                # Berechne optimale Schriftgröße
+                font_size = calculate_font_size(display_text, node_width)
+
+                annotations.append(dict(
+                    x=x,
+                    y=y,
+                    text=display_text,
+                    showarrow=False,
+                    font=dict(size=font_size, color='white', family='Arial'),
+                    xanchor='center',
+                    yanchor='middle'
+                ))
+
+                # Unsichtbarer Scatter-Point für Hover-Info
                 fig.add_trace(go.Scatter(
                     x=[x],
                     y=[y],
-                    mode='markers+text',
-                    marker=dict(size=20, color='lightcoral'),
-                    text=node,
-                    textposition='top center',
+                    mode='markers',
+                    marker=dict(size=node_width, color='rgba(0,0,0,0)', symbol='square'),
                     showlegend=False,
-                    hoverinfo='skip'  # Kein Hover auf Knoten
+                    hovertemplate=f'<b>{node}</b><extra></extra>'
                 ))
 
+            # Update Layout
             fig.update_layout(
-                height=500,
+                height=600,
                 showlegend=False,
-                xaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
-                yaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
-                margin=dict(l=20, r=20, t=20, b=20)
+                xaxis=dict(
+                    showgrid=False,
+                    showticklabels=False,
+                    zeroline=False,
+                    range=[-50, (len(categories) - 1) * h_spacing + 50]
+                ),
+                yaxis=dict(
+                    showgrid=False,
+                    showticklabels=False,
+                    zeroline=False,
+                    range=[-50, max_statuses * v_spacing + 50]
+                ),
+                margin=dict(l=20, r=20, t=40, b=20),
+                annotations=annotations,
+                shapes=shapes,
+                plot_bgcolor='rgba(240, 240, 245, 0.5)'
             )
 
             st.plotly_chart(fig, use_container_width=True)
 
+
         except ImportError:
-            st.error("⚠️ Plotly ist nicht installiert!")
+            st.error("Plotly ist nicht installiert!")
             st.info("Bitte installiere Plotly mit: pip install plotly==5.24.1")
             st.code("""
 # Versuche eine dieser Optionen:
