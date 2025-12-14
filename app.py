@@ -477,13 +477,9 @@ with col2:
         delta_color="off"
     )
 
-    # Sicherstellen, dass Umsatz existiert, bevor sum() aufgerufen wird
-    total_sales = filtered_df['Umsatz'].sum() if 'Umsatz' in filtered_df.columns else 0
 
-    st.metric(
-        label="Gesamtumsatz (gefiltert)",
-        value=f"€{total_sales:,.2f}"
-    )
+
+
 
     with st.expander("Eventlog-Vorschau"):
         # Der DataFrame ist nun optional aufklappbar
