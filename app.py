@@ -147,13 +147,13 @@ def load_eventlog_data(customer_ids, start_date, end_date, material_ids, is_stri
     material_filter_mode_param = 1 if is_strict_inclusion else 0
 
     SQL_QUERY = f"""
-    EXEC process_analyzer_orchestrator
+    EXEC stored_proc.sp_process_analyzer_orchestrator
         @output = 'eventlog',
-        @input_customer_id = {customer_id_param},
-        @input_start_date = {start_date_param},
-        @input_end_date = {end_date_param},
-        @input_material_ids = {material_ids_param},
-        @input_material_filter_mode = {material_filter_mode_param};
+        @customer_id = {customer_id_param},
+        @start_date = {start_date_param},
+        @end_date = {end_date_param},
+        @material_ids = {material_ids_param},
+        @material_filter_mode = {material_filter_mode_param};
     """
     try:
         with pyodbc.connect(connection_string) as connection:
@@ -182,13 +182,13 @@ def load_kpi_data(customer_ids, start_date, end_date, material_ids, is_strict_in
     material_filter_mode_param = 1 if is_strict_inclusion else 0
 
     SQL_QUERY = f"""
-    EXEC process_analyzer_orchestrator
+    EXEC stored_proc.sp_process_analyzer_orchestrator
         @output = 'kpi',
-        @input_customer_id = {customer_id_param},
-        @input_start_date = {start_date_param},
-        @input_end_date = {end_date_param},
-        @input_material_ids = {material_ids_param},
-        @input_material_filter_mode = {material_filter_mode_param};
+        @customer_id = {customer_id_param},
+        @start_date = {start_date_param},
+        @end_date = {end_date_param},
+        @material_ids = {material_ids_param},
+        @material_filter_mode = {material_filter_mode_param};
     """
     try:
         with pyodbc.connect(connection_string) as connection:
@@ -216,13 +216,13 @@ def load_dfg_data(customer_ids, start_date, end_date, material_ids, is_strict_in
     material_filter_mode_param = 1 if is_strict_inclusion else 0
 
     SQL_QUERY = f"""
-    EXEC process_analyzer_orchestrator
+    EXEC stored_proc.sp_process_analyzer_orchestrator
         @output = 'dfg',
-        @input_customer_id = {customer_id_param},
-        @input_start_date = {start_date_param},
-        @input_end_date = {end_date_param},
-        @input_material_ids = {material_ids_param},
-        @input_material_filter_mode = {material_filter_mode_param};
+        @customer_id = {customer_id_param},
+        @start_date = {start_date_param},
+        @end_date = {end_date_param},
+        @material_ids = {material_ids_param},
+        @material_filter_mode = {material_filter_mode_param};
     """
     try:
         with pyodbc.connect(connection_string) as connection:
@@ -277,7 +277,7 @@ def load_lov_products_data():
     if not connection_string:
         return [], {}
 
-    SQL_QUERY = "exec dbo.process_analyzer_orchestrator @output = 'material'"
+    SQL_QUERY = "exec stored_proc.sp_process_analyzer_orchestrator @output = 'material'"
 
     try:
         with pyodbc.connect(connection_string) as connection:
