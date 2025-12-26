@@ -745,8 +745,8 @@ with col3:
             all_nodes = set()
 
             for _, row in df_dfg.iterrows():
-                all_nodes.add(row['From_Activity'])
-                all_nodes.add(row['To_Activity'])
+                all_nodes.add(row['FROM_ACTIVITY'])
+                all_nodes.add(row['TO_ACTIVITY'])
 
             for node in all_nodes:
                 cat = get_category(node)
@@ -791,13 +791,13 @@ with col3:
             # Finde alle Paare (A→B und B→A), die übereinander liegen würden
             bidirectional_edges = set()
             for _, row in df_dfg.iterrows():
-                from_node = row['From_Activity']
-                to_node = row['To_Activity']
+                from_node = row['FROM_ACTIVITY']
+                to_node = row['TO_ACTIVITY']
 
                 # Prüfe ob es auch einen Pfeil in die andere Richtung gibt
                 reverse_exists = df_dfg[
-                                     (df_dfg['From_Activity'] == to_node) &
-                                     (df_dfg['To_Activity'] == from_node)
+                                     (df_dfg['FROM_ACTIVITY'] == to_node) &
+                                     (df_dfg['TO_ACTIVITY'] == from_node)
                                      ].shape[0] > 0
 
                 if reverse_exists and from_node != to_node:  # Nicht bei Self-Loops
@@ -808,9 +808,9 @@ with col3:
             # Zeichne Edges (Pfeile) mit Frequency-Labels
             annotations = []
             for _, row in df_dfg.iterrows():
-                from_node = row['From_Activity']
-                to_node = row['To_Activity']
-                frequency = row['Frequency']
+                from_node = row['FROM_ACTIVITY']
+                to_node = row['TO_ACTIVITY']
+                frequency = row['FREQUENCY']
 
                 if from_node in node_positions and to_node in node_positions:
                     x_from_center, y_from_center = node_positions[from_node]
