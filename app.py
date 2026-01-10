@@ -40,6 +40,10 @@ if 'applied_produkt_input' not in st.session_state: st.session_state['applied_pr
 if 'applied_produkt_filter_exklusiv' not in st.session_state: st.session_state[
     'applied_produkt_filter_exklusiv'] = False
 
+# Security Level
+if "security_level" not in st.session_state:
+    st.session_state["security_level"] = 3  # Default für Studenten (Admin Rechte)
+st.set_page_config(layout="wide", page_title="Dashboard Filter Demo")
 
 def apply_filters():
     """Kopiert alle aktuellen UI-Filterwerte in die 'applied'-Keys und setzt den Trigger."""
@@ -165,6 +169,16 @@ def load_eventlog_data(customer_ids, start_date, end_date, material_ids, is_stri
         st.error(f"Fehler bei der Eventlog-Datenbankabfrage: {ex}")
         return pd.DataFrame()
 
+@st.cache_data(ttl=300)
+def load_sollwerte():
+    sql = """
+        SELECT ATTRIBUTE_NAME, TARGET_VALUE
+        FROM dbo.T_PROCESS_TO_BE_TIME
+    """
+    with pyodbc.connect(_get_db_connection()) as conn:
+        df = pd.read_sql(sql, conn)
+
+    return dict(zip(df["ATTRIBUTE_NAME"], df["TARGET_VALUE"]))
 
 @st.cache_data(ttl=600)
 def load_kpi_data(customer_ids, start_date, end_date, material_ids, is_strict_inclusion):
@@ -494,48 +508,129 @@ with col2:
 
 ########################################################################################################################
 
-with col3:
-    # Beginnt den zentrierten Container für col3
-    st.markdown("<div class='center-col-content'>", unsafe_allow_html=True)
+@st.cache_data(ttl=300)
+def load_sollwerte():
+    sql = """
+        SELECT ATTRIBUTE_NAME, TARGET_VALUE
+        FROM dbo.T_PROCESS_TO_BE_TIME
+    """
+    with pyodbc.connect(_get_db_connection()) as conn:
+        df = pd.read_sql(sql, conn)
 
-    # 1. Prozess-Scorecard (Tabelle)
-    # ZENTRIERTE UNTERÜBERSCHRIFT
+    return dict(zip(df["ATTRIBUTE_NAME"], df["TARGET_VALUE"]))
+
+
+def update_sollwert(attribute_name, target_value, user_name):
+    sql = """
+        UPDATE dbo.T_PROCESS_TO_BE_TIME
+        SET TARGET_VALUE = ?,
+            INS_USER = ?,
+            EVENT_TIME = GETDATE()
+        WHERE ATTRIBUTE_NAME = ?
+    """
+    with pyodbc.connect(_get_db_connection()) as conn:
+        cur = conn.cursor()
+        cur.execute(sql, target_value, user_name, attribute_name)
+        conn.commit()
+
+    st.cache_data.clear()
+
+
+########################################################################################################
+with col3:
+
+    st.markdown("<div class='center-col-content'>", unsafe_allow_html=True)
     st.markdown("<h3 style='text-align: center;'>KPI - Zielerreichung</h3>", unsafe_allow_html=True)
 
-    # Erstellung des simulierten DataFrames für die Prozess-Tabelle (KPI-Daten werden verwendet)
-    # HINWEIS: Hier müsste nun df_kpi verwendet werden, falls die Struktur passt
-    # Da wir KPI-Daten ignorieren sollten (Ihre Anweisung), belassen wir die simulierte Tabelle.
-    # Wenn df_kpi verwendet werden soll, müsste hier die df_kpi Tabelle hinein: process_df = df_kpi.copy()
-    process_data = {
-        'Kennzahl': ['Prozesskennzahl 1', 'Prozesskennzahl 2', 'Prozesskennzahl 3', 'Prozesskennzahl 4'],
-        'Einheit': ['h', 'h', 'h', 'h'],  # Einheit von % auf h geändert
-        'Toleranz unten': [70.00, 70.00, 70.00, 70.00],
-        'Ziel': [100.00, 100.00, 100.00, 100.00],
-        'Ist': [60.00, 70.00, 100.00, 110.00],
-    }
-    process_df = pd.DataFrame(process_data)
+    # -----------------------------
+    # SOLLWERTE AUS DB LADEN
+    # -----------------------------
+    def load_sollwerte():
+        conn = pyodbc.connect(_get_db_connection())
+        df = pd.read_sql(
+            "SELECT ATTRIBUTE_NAME, TARGET_VALUE FROM dbo.T_PROCESS_TO_BE_TIME",
+            conn
+        )
+        conn.close()
+        return dict(zip(df["ATTRIBUTE_NAME"], df["TARGET_VALUE"]))
 
-    # Berechnung der Zielerreichung
-    process_df['Zielerreichung'] = (process_df['Ist'] / process_df['Ziel'])
-    process_df['Bewertung'] = "🟢"
+    # -----------------------------
+    # SOLLWERT SPEICHERN (Stored Proc)
+    # -----------------------------
+    def save_sollwert(kpi_name, value):
+        conn = pyodbc.connect(_get_db_connection())
+        cur = conn.cursor()
+        cur.execute(
+            "EXEC stored_proc.sp_set_process_target_time ?, ?, ?",
+            kpi_name,
+            float(value),
+            "w25s227"   # aktuell hart codiert
+        )
+        conn.commit()
+        conn.close()
 
-    # Anzeige der Tabelle mit Formatierung
-    st.dataframe(
-        process_df.style.format({
-            'Toleranz unten': "{:.2f}",
-            'Ziel': "{:.2f}",
-            'Ist': "{:.2f}",
-            'Zielerreichung': "{:.2%}"
-        }),
-        width='stretch',  # KORREKTUR: use_container_width=True -> width='stretch'
-        hide_index=True,
-        column_config={
-            "Bewertung": st.column_config.Column(
-                label="",
-                width="tiny"
-            )
-        }
-    )
+    # -----------------------------
+    # DATEN VERARBEITEN
+    # -----------------------------
+    sollwerte = load_sollwerte()
+
+    if df_kpi is None or df_kpi.empty:
+        st.warning("Keine KPI-Daten vorhanden.")
+    else:
+        df = df_kpi.copy()
+
+        # SOLL / IST
+        df["SOLL"] = df["KPI_NAME"].map(sollwerte).fillna(0.0)
+        df["IST"] = df["AVG_VALUE"]
+
+        # IST Spalte für Anzeige umbenennen
+        df.rename(columns={"IST": "IST (Durchschnitt)"}, inplace=True)
+
+        # -----------------------------
+        # AMPELLOGIK
+        # -----------------------------
+        def ampel(row):
+            if row["IST (Durchschnitt)"] <= row["SOLL"]:
+                return "🟢"
+            elif row["IST (Durchschnitt)"] <= row["SOLL"] * 1.1:
+                return "🟡"
+            else:
+                return "🔴"
+
+        df["Ampel"] = df.apply(ampel, axis=1)
+
+        # -----------------------------
+        # EDITIERBARE TABELLE (NUR EINE)
+        # -----------------------------
+        edited_df = st.data_editor(
+            df[["KPI_NAME", "SOLL", "IST (Durchschnitt)", "Ampel"]],
+            hide_index=True,
+            use_container_width=True,
+            disabled=["KPI_NAME", "IST (Durchschnitt)", "Ampel"],
+            column_config={
+                "SOLL": st.column_config.NumberColumn(
+                    "SOLL",
+                    step=1.0,
+                    format="%.2f"
+                )
+            },
+            key="kpi_editor"
+        )
+
+        # -----------------------------
+        # SPEICHERN
+        # -----------------------------
+        if st.button("SOLLWERTE speichern"):
+            for _, row in edited_df.iterrows():
+                save_sollwert(row["KPI_NAME"], row["SOLL"])
+
+            st.success("SOLLWERTE erfolgreich gespeichert.")
+            st.rerun()
+
+    st.markdown("</div>", unsafe_allow_html=True)
+########################################################################################################
+
+    ##################################################################################################################
 
     # 2. DFG-Visualisierung (NUR GRAPH, KEINE TABELLE)
     st.markdown("<h3 style='text-align: center;'>DFG - Prozessfluss</h3>", unsafe_allow_html=True)
