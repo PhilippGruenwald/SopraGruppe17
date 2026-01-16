@@ -11,20 +11,13 @@ load_dotenv()
 # ============================================================================
 
 def get_connection_string():
-    """
-    Erstellt einen Connection String mit den FESTEN Technical User Credentials aus .env.
-    Diese Credentials werden für ALLE Datenbankverbindungen verwendet.
+    # Server und Database aus Streamlit Secrets
+    server = st.secrets.get("Server", "edu.hdm-server.eu")
+    database = st.secrets.get("Database", "ERPDEV")
 
-    Returns:
-        str: Connection String für pyodbc
-    """
-    # Server und Database aus .env
-    server = os.environ.get('Server', 'edu.hdm-server.eu')
-    database = os.environ.get('Database', 'ERPDEV')
-
-    # FESTE Technical User Credentials aus .env
-    username = os.environ.get('UID', 'ERP_REMOTE_USER')
-    password = os.environ.get('PWD', 'Password123')
+    # FESTE Technical User Credentials aus Secrets
+    username = st.secrets.get("UID", "ERP_REMOTE_USER")
+    password = st.secrets.get("PWD", "Password123")
 
     connection_string = (
         "Driver={ODBC Driver 17 for SQL Server};"

@@ -1,17 +1,13 @@
 import pyodbc
-from dotenv import load_dotenv
-import os
-
-load_dotenv()
+import streamlit as st
 
 connection_string = (
     "Driver={SQL Server};"
-    f"Server={os.environ.get('Server')};"
-    f"Database={os.environ.get('Database')};"
-    f"UID={os.environ.get('UID')};"
-    f"PWD={os.environ.get('PWD')}"
+    f"Server={st.secrets['Server']};"
+    f"Database={st.secrets['Database']};"
+    f"UID={st.secrets['UID']};"
+    f"PWD={st.secrets['PWD']}"
 )
-
 
 try:
     connection = pyodbc.connect(connection_string)
