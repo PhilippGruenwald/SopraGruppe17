@@ -5,6 +5,15 @@ import pyodbc
 from dotenv import load_dotenv
 import os
 
+# NEU: Import der Login-Funktionen
+from login import (
+    show_login_page,
+    is_authenticated,
+    logout,
+    get_connection_string,
+    get_user_info
+)
+
 # Laden der Umgebungsvariablen (SERVER, DATABASE, UID, PWD) aus der .env-Datei
 load_dotenv()
 
@@ -12,9 +21,18 @@ load_dotenv()
 
 # --- 1. Konfiguration und Initialisierung ---
 
-st.set_page_config(layout="wide", page_title="Dashboard Filter Demo")
+st.set_page_config(layout="wide", page_title="Adventure Bikes - Prozessanalyse")
 
-# Standardwerte für Datumsfelder
+# ===== NEU: AUTHENTIFIZIERUNG PRÜFEN =====
+# Prüfe ob User angemeldet ist, sonst zeige Login-Seite
+if not is_authenticated():
+    show_login_page()
+    st.stop()  # Stoppe die Ausführung des restlichen Codes
+
+# User ist angemeldet - hole Credentials für spätere Verwendung
+user_info = get_user_info()
+
+# Standardwerte fÃ¼r Datumsfelder
 DEFAULT_START_DATE = date(2025, 1, 1)
 DEFAULT_END_DATE = date.today()
 
@@ -42,8 +60,9 @@ if 'applied_produkt_filter_exklusiv' not in st.session_state: st.session_state[
 
 # Security Level
 if "security_level" not in st.session_state:
-    st.session_state["security_level"] = 3  # Default für Studenten (Admin Rechte)
+    st.session_state["security_level"] = 3  # Default fÃ¼r Studenten (Admin Rechte)
 st.set_page_config(layout="wide", page_title="Dashboard Filter Demo")
+
 
 def apply_filters():
     """Kopiert alle aktuellen UI-Filterwerte in die 'applied'-Keys und setzt den Trigger."""
@@ -53,7 +72,7 @@ def apply_filters():
     st.session_state['applied_kunde_input'] = st.session_state['kunde_input']
     st.session_state['applied_produkt_input'] = st.session_state['produkt_input']
     st.session_state['applied_produkt_filter_exklusiv'] = st.session_state['produkt_filter_exklusiv']
-    # Wichtig: Setze den Trigger, damit die DB-Abfrage beim nächsten Rerun ausgeführt wird
+    # Wichtig: Setze den Trigger, damit die DB-Abfrage beim nÃ¤chsten Rerun ausgefÃ¼hrt wird
     st.session_state.data_applied = True
 
     # NEU: Erzwinge sofortigen Rerun, damit die gecachten Funktionen den neuen State sehen
@@ -61,8 +80,8 @@ def apply_filters():
 
 
 def reset_filters():
-    """Setzt alle Filter im Session State auf ihre Standardwerte zurück und wendet sie an."""
-    # 1. UI Keys zurücksetzen
+    """Setzt alle Filter im Session State auf ihre Standardwerte zurÃ¼ck und wendet sie an."""
+    # 1. UI Keys zurÃ¼cksetzen
     st.session_state['zeitraum_input'] = 'Gesamt'
     st.session_state['start_date_input'] = DEFAULT_START_DATE
     st.session_state['end_date_input'] = DEFAULT_END_DATE
@@ -77,7 +96,7 @@ def reset_filters():
 def update_dates_on_period_change():
     """
     Callback-Funktion, die die Start- und Enddaten im Session State
-    aktualisiert, sobald die Zeitraum-Selectbox geändert wird.
+    aktualisiert, sobald die Zeitraum-Selectbox geÃ¤ndert wird.
     """
     zeitraum = st.session_state.get('zeitraum_input', 'Gesamt')
     current_end_date = date.today()
@@ -94,11 +113,11 @@ def update_dates_on_period_change():
     elif zeitraum == 'Letzte 30 Tage':
         target_start_date = current_end_date - timedelta(days=30)
     elif zeitraum == 'Gesamt':
-        # Bei 'Gesamt' die tatsächliche Min-Range verwenden
+        # Bei 'Gesamt' die tatsÃ¤chliche Min-Range verwenden
         target_start_date = min_data_date_fallback
         target_end_date = current_end_date
 
-        # Nur aktualisieren, wenn ein vordefinierter Zeitraum gewählt wurde
+        # Nur aktualisieren, wenn ein vordefinierter Zeitraum gewÃ¤hlt wurde
     if target_start_date is not None and zeitraum != 'Benutzerdefiniert':
         st.session_state['start_date_input'] = target_start_date
         st.session_state['end_date_input'] = target_end_date
@@ -111,33 +130,23 @@ def update_dates_on_period_change():
 # --- HILFSFUNKTIONEN ZUM LADEN VON DATEN MIT EXPLIZITEM CACHING ---
 
 def _get_db_connection():
-    """Stellt die Datenbankverbindung her (wird NICHT gecached)."""
-    server = os.environ.get('SERVER')
-    database = os.environ.get('DATABASE')
-    uid = os.environ.get('UID')
-    pwd = os.environ.get('PWD')
+    """
+    Stellt die Datenbankverbindung her mit User-Credentials (wird NICHT gecached).
+    Verwendet die Credentials des angemeldeten Users aus dem Session State.
+    """
+    # Verwende die Funktion aus login.py
+    connection_string = get_connection_string()
 
-    if not all([server, database, uid, pwd]):
-        st.error(
-            "Datenbank-Konfiguration fehlt! Bitte stellen Sie sicher, dass SERVER, DATABASE, UID und PWD in der .env-Datei gesetzt sind.")
+    if not connection_string:
+        st.error("Fehler: Keine gültige Datenbankverbindung. Bitte melden Sie sich erneut an.")
         return None
-    try:
-        connection_string = (
-            "Driver={ODBC Driver 17 for SQL Server};"
-            f"Server={server};"
-            f"Database={database};"
-            f"UID={uid};"
-            f"PWD={pwd}"
-        )
-        return connection_string
-    except Exception as e:
-        st.error(f"Fehler beim Erstellen des Connection Strings: {e}")
-        return None
+
+    return connection_string
 
 
 @st.cache_data(ttl=600)
-def load_eventlog_data(customer_ids, start_date, end_date, material_ids, is_strict_inclusion):
-    """Lädt die Eventlog-Daten, Cache-Key ist die Liste der Argumente."""
+def load_eventlog_data(customer_ids, start_date, end_date, material_ids, is_strict_inclusion, _username=None):
+    """LÃ¤dt die Eventlog-Daten, Cache-Key ist die Liste der Argumente."""
     connection_string = _get_db_connection()
     if not connection_string:
         return pd.DataFrame()
@@ -169,8 +178,9 @@ def load_eventlog_data(customer_ids, start_date, end_date, material_ids, is_stri
         st.error(f"Fehler bei der Eventlog-Datenbankabfrage: {ex}")
         return pd.DataFrame()
 
+
 @st.cache_data(ttl=300)
-def load_sollwerte():
+def load_sollwerte(_username=None):
     sql = """
         SELECT ATTRIBUTE_NAME, TARGET_VALUE
         FROM dbo.T_PROCESS_TO_BE_TIME
@@ -180,9 +190,10 @@ def load_sollwerte():
 
     return dict(zip(df["ATTRIBUTE_NAME"], df["TARGET_VALUE"]))
 
+
 @st.cache_data(ttl=600)
-def load_kpi_data(customer_ids, start_date, end_date, material_ids, is_strict_inclusion):
-    """Lädt die KPI-Daten, Cache-Key ist die Liste der Argumente."""
+def load_kpi_data(customer_ids, start_date, end_date, material_ids, is_strict_inclusion, _username=None):
+    """LÃ¤dt die KPI-Daten, Cache-Key ist die Liste der Argumente."""
     connection_string = _get_db_connection()
     if not connection_string:
         return pd.DataFrame()
@@ -214,8 +225,8 @@ def load_kpi_data(customer_ids, start_date, end_date, material_ids, is_strict_in
 
 
 @st.cache_data(ttl=600)
-def load_dfg_data(customer_ids, start_date, end_date, material_ids, is_strict_inclusion):
-    """Lädt die DFG-Daten (Directly-Follows Graph), Cache-Key ist die Liste der Argumente."""
+def load_dfg_data(customer_ids, start_date, end_date, material_ids, is_strict_inclusion, _username=None):
+    """LÃ¤dt die DFG-Daten (Directly-Follows Graph), Cache-Key ist die Liste der Argumente."""
     connection_string = _get_db_connection()
     if not connection_string:
         return pd.DataFrame()
@@ -248,10 +259,10 @@ def load_dfg_data(customer_ids, start_date, end_date, material_ids, is_strict_in
 
 
 @st.cache_data(ttl=3600)
-def load_lov_customers_data():
+def load_lov_customers_data(_username=None):
     """
-    Lädt Kunden-IDs und Namen.
-    Rückgabe: (Liste der IDs, Dictionary {ID: Name})
+    LÃ¤dt Kunden-IDs und Namen.
+    RÃ¼ckgabe: (Liste der IDs, Dictionary {ID: Name})
     """
     connection_string = _get_db_connection()
     if not connection_string:
@@ -267,10 +278,10 @@ def load_lov_customers_data():
         if df.empty:
             return [], {}
 
-        # 1. Liste aller IDs für die Auswahl-Optionen
+        # 1. Liste aller IDs fÃ¼r die Auswahl-Optionen
         ids = df['CUSTOMER_ID'].tolist()
 
-        # 2. Dictionary für die Übersetzung ID -> Name
+        # 2. Dictionary fÃ¼r die Ãœbersetzung ID -> Name
         # Ergebnis: {1: '01 / BikePro...', 2: '02 / BikePro...'}
         mapping = pd.Series(df.CUSTOMER_LONG.values, index=df.CUSTOMER_ID).to_dict()
 
@@ -282,10 +293,10 @@ def load_lov_customers_data():
 
 
 @st.cache_data(ttl=3600)
-def load_lov_products_data():
+def load_lov_products_data(_username=None):
     """
-    Lädt Material-IDs und Beschreibungen.
-    Rückgabe: (Liste der IDs, Dictionary {ID: Name})
+    LÃ¤dt Material-IDs und Beschreibungen.
+    RÃ¼ckgabe: (Liste der IDs, Dictionary {ID: Name})
     """
     connection_string = _get_db_connection()
     if not connection_string:
@@ -314,7 +325,7 @@ def load_lov_products_data():
 
 
 ########################################################################################################################
-# SQL - Rückgabe
+# SQL - RÃ¼ckgabe
 ########################################################################################################################
 
 # --- DATEN LADEN MIT APPLIED FILTERN ---
@@ -324,7 +335,7 @@ df_eventlog = pd.DataFrame()
 df_kpi = pd.DataFrame()
 df_dfg = pd.DataFrame()
 
-# Bedingte Ausführung: Führe SQL-Abfrage nur aus, wenn der Button gedrückt wurde
+# Bedingte AusfÃ¼hrung: FÃ¼hre SQL-Abfrage nur aus, wenn der Button gedrÃ¼ckt wurde
 if st.session_state.get('data_applied', False):
 
     # Applied Parameter aus dem Session State lesen
@@ -334,27 +345,30 @@ if st.session_state.get('data_applied', False):
     applied_material_ids = st.session_state.get('applied_produkt_input', [])
     applied_is_strict_inclusion = st.session_state.get('applied_produkt_filter_exklusiv', False)
 
-    # DATEN LADEN: Alle Datensätze werden geladen
+    # DATEN LADEN: Alle DatensÃ¤tze werden geladen
     df_eventlog = load_eventlog_data(
         customer_ids=applied_customer_ids,
         start_date=applied_start_date,
         end_date=applied_end_date,
         material_ids=applied_material_ids,
-        is_strict_inclusion=applied_is_strict_inclusion
+        is_strict_inclusion=applied_is_strict_inclusion,
+        _username=user_info['username'] if user_info else None
     )
     df_kpi = load_kpi_data(
         customer_ids=applied_customer_ids,
         start_date=applied_start_date,
         end_date=applied_end_date,
         material_ids=applied_material_ids,
-        is_strict_inclusion=applied_is_strict_inclusion
+        is_strict_inclusion=applied_is_strict_inclusion,
+        _username=user_info['username'] if user_info else None
     )
     df_dfg = load_dfg_data(
         customer_ids=applied_customer_ids,
         start_date=applied_start_date,
         end_date=applied_end_date,
         material_ids=applied_material_ids,
-        is_strict_inclusion=applied_is_strict_inclusion
+        is_strict_inclusion=applied_is_strict_inclusion,
+        _username=user_info['username'] if user_info else None
     )
 
     # Sicherstellen, dass die App bei leeren Eventlog-Daten nicht stoppt, sondern eine Warnung ausgibt
@@ -362,34 +376,56 @@ if st.session_state.get('data_applied', False):
         st.warning(
             "Es konnten keine Eventlog-Daten geladen werden (aufgrund zu restriktiver Filter).")
 
-    # Sicherstellen, dass Umsatz numerisch ist, um Summen berechnen zu können
+    # Sicherstellen, dass Umsatz numerisch ist, um Summen berechnen zu kÃ¶nnen
     if 'Umsatz' in df_eventlog.columns:
         df_eventlog['Umsatz'] = pd.to_numeric(df_eventlog['Umsatz'], errors='coerce').fillna(0)
 
 ########################################################################################################################
+
+########################################################################################################################
 # Frontend
 #######################################################################################################################
+
+# --- HEADER MIT USER-INFO UND LOGOUT ---
+header_col1, header_col2, header_col3 = st.columns([3, 4, 2])
+
+with header_col1:
+    st.markdown("### 🚴 Adventure Bikes - Prozessanalyse")
+
+with header_col2:
+    if user_info:
+        st.markdown(f"**Angemeldet als:** {user_info['username']}")
+        st.caption(f"Datenbank: {user_info['database']}")
+
+with header_col3:
+    if st.button("🚪 Abmelden", key="logout_button", use_container_width=True):
+        logout()
+
+st.markdown("---")
+
 # --- 2. Spaltendefinition ---
-col1, col2, col3 = st.columns([2, 2, 3])  # Spaltenverhältnis: 2:2:3
+col1, col2, col3 = st.columns([2, 2, 3])  # SpaltenverhÃ¤ltnis: 2:2:3
 
 # --- 3. Filter-Widgets (Innerhalb von col1) ---
 with col1:
-    # UMWICKELT DEN INHALT MIT EINEM ST.CONTAINER FÜR EINHEITLICHES STYLING
+    # UMWICKELT DEN INHALT MIT EINEM ST.CONTAINER FÃœR EINHEITLICHES STYLING
     filter_container = st.container()
 
     with filter_container:
         # DYNAMISCHES LADEN DER FILTEROPTIONEN
 
-        customer_ids_options, customer_map = load_lov_customers_data()
-        product_ids_options, product_map = load_lov_products_data()
+        customer_ids_options, customer_map = load_lov_customers_data(
+            _username=user_info['username'] if user_info else None)
+        product_ids_options, product_map = load_lov_products_data(
+            _username=user_info['username'] if user_info else None)
 
-        # --- DATUM BERECHNUNG FÜR UI-ANZEIGE ---
+        # --- DATUM BERECHNUNG FÃœR UI-ANZEIGE ---
         current_end_date = date.today()
-        # Fallback für minimales Datum
+        # Fallback fÃ¼r minimales Datum
         min_data_date = df_eventlog[
             'Datum'].min().date() if 'Datum' in df_eventlog.columns and 'Datum' in df_eventlog.dtypes and not df_eventlog.empty else DEFAULT_START_DATE
 
-        # Speichern des minimalen Datums im Session State für den Callback
+        # Speichern des minimalen Datums im Session State fÃ¼r den Callback
         st.session_state['min_data_date'] = min_data_date
 
         zeitraum_selection = st.session_state.get('zeitraum_input', 'Gesamt')
@@ -400,7 +436,7 @@ with col1:
         # --- ZEITRAUM FILTER (AUSSERHALB DES FORMS) ---
         st.markdown("#### **1. Zeitraum**", unsafe_allow_html=True)
 
-        # Selectbox für Zeitraum mit Callback zur sofortigen State-Aktualisierung
+        # Selectbox fÃ¼r Zeitraum mit Callback zur sofortigen State-Aktualisierung
         st.selectbox(
             'Zeitraum auswählen',
             ['Gesamt', 'Letzte 7 Tage', 'Letzte 30 Tage', 'Benutzerdefiniert'],
@@ -431,25 +467,25 @@ with col1:
         # 2. OPTIONALE FILTER (INNERHALB DES FORMS)
         with st.form(key='filter_form'):
             # 2. OPTIONALE FILTER
-            st.markdown("#### **2. Weitere Filter**", unsafe_allow_html=True)  # Überschrift angepasst/verkleinert
+            st.markdown("#### **2. Weitere Filter**", unsafe_allow_html=True)  # Ãœberschrift angepasst/verkleinert
             st.markdown("Bitte weitere Filter wählen:")
 
             # 2. Kunde (Multiselect)
             st.markdown("##### Kunde", unsafe_allow_html=True)
             st.multiselect(
                 'Kunde auswählen',
-                options=customer_ids_options,  # Die Box enthält technisch die IDs
+                options=customer_ids_options,  # Die Box enthÃ¤lt technisch die IDs
                 format_func=lambda x: customer_map.get(x, str(x)),  # Zeigt aber den Namen an!
-                key='kunde_input'  # Speichert die gewählten IDs im State
+                key='kunde_input'  # Speichert die gewÃ¤hlten IDs im State
             )
 
             # 3. Produkte (Multiselect)
             st.markdown("##### Produkt", unsafe_allow_html=True)
             st.multiselect(
                 'Wähle ein Produkt',
-                options=product_ids_options,  # Die Box enthält technisch die IDs
+                options=product_ids_options,  # Die Box enthÃ¤lt technisch die IDs
                 format_func=lambda x: product_map.get(x, str(x)),  # Zeigt aber den Namen an!
-                key='produkt_input'  # Speichert die gewählten IDs im State
+                key='produkt_input'  # Speichert die gewÃ¤hlten IDs im State
             )
 
             st.checkbox(
@@ -462,17 +498,17 @@ with col1:
 
             submit_button = st.form_submit_button(label='Filter anwenden')
 
-        # NEUE LOGIK: Führt apply_filters() NUR aus, wenn der Submit Button gedrückt wurde
+        # NEUE LOGIK: FÃ¼hrt apply_filters() NUR aus, wenn der Submit Button gedrÃ¼ckt wurde
         if submit_button:
             apply_filters()
-            # KORREKTUR: Erzwinge sofortigen Rerun, um das "Zwei-Klick"-Problem zu lösen
+            # KORREKTUR: Erzwinge sofortigen Rerun, um das "Zwei-Klick"-Problem zu lÃ¶sen
             st.rerun()
 
         # --- BUTTONS NEBENEINANDER (MUSS AUSSERHALB DES FORMS SEIN) ---
         # st.button ruft reset_filters auf, was wiederum apply_filters aufruft
         st.button("Filter zurücksetzen", on_click=reset_filters, key='reset_button')
 
-# --- 5. Filter-Anwendungslogik (ENTFERNT, DA IN DB AUSGEFÜHRT) ---
+# --- 5. Filter-Anwendungslogik (ENTFERNT, DA IN DB AUSGEFÃœHRT) ---
 
 # filtered_df ist nun df_eventlog
 filtered_df = df_eventlog.copy()
@@ -480,20 +516,16 @@ filtered_df = df_eventlog.copy()
 ########################################################################################################################
 
 with col2:
-    # Beginnt den zentrierten Container für col2
+    # Beginnt den zentrierten Container fÃ¼r col2
     st.markdown("<div class='center-col-content'>", unsafe_allow_html=True)
 
     # st.markdown("<h3 style='text-align: center;'>Zusammenfassung</h3>", unsafe_allow_html=True)
     st.metric(
         label="Gefilterte Datensätze",
         value=f"{len(filtered_df):,}",
-        delta=None,  # Delta entfernt, da wir die ungefilterte Größe nicht mehr sinnvoll vergleichen können
+        delta=None,  # Delta entfernt, da wir die ungefilterte GrÃ¶ÃŸe nicht mehr sinnvoll vergleichen kÃ¶nnen
         delta_color="off"
     )
-
-
-
-
 
     with st.expander("Eventlog-Vorschau"):
         # Der DataFrame ist nun optional aufklappbar
@@ -503,13 +535,14 @@ with col2:
             hide_index=True
         )
 
-    # Schließt den zentrierten Container für col2
+    # SchlieÃŸt den zentrierten Container fÃ¼r col2
     st.markdown("</div>", unsafe_allow_html=True)
+
 
 ########################################################################################################################
 
 @st.cache_data(ttl=300)
-def load_sollwerte():
+def load_sollwerte(_username=None):
     sql = """
         SELECT ATTRIBUTE_NAME, TARGET_VALUE
         FROM dbo.T_PROCESS_TO_BE_TIME
@@ -538,14 +571,14 @@ def update_sollwert(attribute_name, target_value, user_name):
 
 ########################################################################################################
 with col3:
-
     st.markdown("<div class='center-col-content'>", unsafe_allow_html=True)
     st.markdown("<h3 style='text-align: center;'>KPI - Zielerreichung</h3>", unsafe_allow_html=True)
+
 
     # -----------------------------
     # SOLLWERTE AUS DB LADEN
     # -----------------------------
-    def load_sollwerte():
+    def load_sollwerte(_username=None):
         conn = pyodbc.connect(_get_db_connection())
         df = pd.read_sql(
             "SELECT ATTRIBUTE_NAME, TARGET_VALUE FROM dbo.T_PROCESS_TO_BE_TIME",
@@ -553,6 +586,7 @@ with col3:
         )
         conn.close()
         return dict(zip(df["ATTRIBUTE_NAME"], df["TARGET_VALUE"]))
+
 
     # -----------------------------
     # SOLLWERT SPEICHERN (Stored Proc)
@@ -564,15 +598,16 @@ with col3:
             "EXEC stored_proc.sp_set_process_target_time ?, ?, ?",
             kpi_name,
             float(value),
-            "w25s227"   # aktuell hart codiert
+            "w25s227"  # aktuell hart codiert
         )
         conn.commit()
         conn.close()
 
+
     # -----------------------------
     # DATEN VERARBEITEN
     # -----------------------------
-    sollwerte = load_sollwerte()
+    sollwerte = load_sollwerte(_username=user_info['username'] if user_info else None)
 
     if df_kpi is None or df_kpi.empty:
         st.warning("Keine KPI-Daten vorhanden.")
@@ -583,8 +618,9 @@ with col3:
         df["SOLL"] = df["KPI_NAME"].map(sollwerte).fillna(0.0)
         df["IST"] = df["AVG_VALUE"]
 
-        # IST Spalte für Anzeige umbenennen
+        # IST Spalte fÃ¼r Anzeige umbenennen
         df.rename(columns={"IST": "IST (Durchschnitt)"}, inplace=True)
+
 
         # -----------------------------
         # AMPELLOGIK
@@ -628,7 +664,7 @@ with col3:
             st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
-########################################################################################################
+    ########################################################################################################
 
     ##################################################################################################################
 
@@ -644,10 +680,10 @@ with col3:
             categories = ['SALESOFFER', 'SALESORDER', 'DELIVERY', 'INVOICE', 'PAYMENT']
             category_colors = {
                 'SALESOFFER': '#4A90E2',  # Blau
-                'SALESORDER': '#7ED321',  # Grün
+                'SALESORDER': '#7ED321',  # GrÃ¼n
                 'DELIVERY': '#F5A623',  # Orange
                 'INVOICE': '#BD10E0',  # Lila
-                'PAYMENT': '#50E3C2'  # Türkis
+                'PAYMENT': '#50E3C2'  # TÃ¼rkis
             }
 
 
@@ -671,17 +707,17 @@ with col3:
             def calculate_edge_intersection(x_center, y_center, x_target, y_target, node_width, node_height):
                 """
                 Berechnet den Punkt am Rand eines Rechtecks, wo die Linie vom Zentrum
-                zum Zielpunkt das Rechteck verlässt bzw. eintritt.
+                zum Zielpunkt das Rechteck verlÃ¤sst bzw. eintritt.
                 """
                 # Richtungsvektor
                 dx = x_target - x_center
                 dy = y_target - y_center
 
-                # Spezialfälle: keine Bewegung
+                # SpezialfÃ¤lle: keine Bewegung
                 if dx == 0 and dy == 0:
                     return x_center, y_center
 
-                # Berechne t-Werte für horizontale und vertikale Kanten
+                # Berechne t-Werte fÃ¼r horizontale und vertikale Kanten
                 if dx == 0:
                     # Vertikale Linie
                     edge_x = x_center
@@ -691,7 +727,7 @@ with col3:
                     edge_x = x_center + (node_width / 2 if dx > 0 else -node_width / 2)
                     edge_y = y_center
                 else:
-                    # Berechne das Verhältnis für beide Achsen
+                    # Berechne das VerhÃ¤ltnis fÃ¼r beide Achsen
                     t_x = (node_width / 2) / abs(dx)
                     t_y = (node_height / 2) / abs(dy)
 
@@ -706,25 +742,25 @@ with col3:
 
             def line_intersects_rectangle(x1, y1, x2, y2, rect_x, rect_y, rect_width, rect_height):
                 """
-                Prüft, ob eine Linie von (x1,y1) nach (x2,y2) durch ein Rechteck geht.
+                PrÃ¼ft, ob eine Linie von (x1,y1) nach (x2,y2) durch ein Rechteck geht.
                 Rechteck ist definiert durch Mittelpunkt (rect_x, rect_y) und Dimensionen.
                 """
-                # Erweitere Rechteck leicht für bessere Erkennung
+                # Erweitere Rechteck leicht fÃ¼r bessere Erkennung
                 margin = 5
                 rect_left = rect_x - rect_width / 2 - margin
                 rect_right = rect_x + rect_width / 2 + margin
                 rect_top = rect_y - rect_height / 2 - margin
                 rect_bottom = rect_y + rect_height / 2 + margin
 
-                # Prüfe ob Liniensegment das Rechteck schneidet (Liang-Barsky Algorithmus vereinfacht)
-                # Prüfe ob mindestens ein Endpunkt im Rechteck liegt
+                # PrÃ¼fe ob Liniensegment das Rechteck schneidet (Liang-Barsky Algorithmus vereinfacht)
+                # PrÃ¼fe ob mindestens ein Endpunkt im Rechteck liegt
                 def point_in_rect(px, py):
                     return rect_left <= px <= rect_right and rect_top <= py <= rect_bottom
 
                 # Wenn einer der Endpunkte im Rechteck ist, gibt es eine Kollision
-                # (außer es ist der Ziel- oder Start-Knoten selbst)
+                # (auÃŸer es ist der Ziel- oder Start-Knoten selbst)
                 if point_in_rect(x1, y1) or point_in_rect(x2, y2):
-                    # Prüfe ob es der Mittelpunkt des Rechtecks selbst ist
+                    # PrÃ¼fe ob es der Mittelpunkt des Rechtecks selbst ist
                     tolerance = rect_width / 2 + 1
                     if (abs(x1 - rect_x) < tolerance and abs(y1 - rect_y) < tolerance):
                         return False  # Startknoten
@@ -732,12 +768,12 @@ with col3:
                         return False  # Zielknoten
                     return True
 
-                # Prüfe ob Linie durch Rechteck geht (vereinfachte Version)
+                # PrÃ¼fe ob Linie durch Rechteck geht (vereinfachte Version)
                 # Berechne parametrische Form der Linie: P = P1 + t*(P2-P1)
                 dx = x2 - x1
                 dy = y2 - y1
 
-                # Prüfe Schnittpunkte mit allen vier Kanten
+                # PrÃ¼fe Schnittpunkte mit allen vier Kanten
                 if dx != 0:
                     # Linke Kante
                     t = (rect_left - x1) / dx
@@ -772,9 +808,9 @@ with col3:
             def calculate_curved_path(x1, y1, x2, y2, all_obstacles, node_width, node_height):
                 """
                 Berechnet einen gebogenen Pfad, wenn die direkte Linie durch Knoten geht.
-                Gibt Kontrollpunkte für eine Bezier-Kurve zurück.
+                Gibt Kontrollpunkte fÃ¼r eine Bezier-Kurve zurÃ¼ck.
                 """
-                # Prüfe ob direkte Linie Knoten schneidet
+                # PrÃ¼fe ob direkte Linie Knoten schneidet
                 has_collision = False
                 collision_points = []
 
@@ -787,7 +823,7 @@ with col3:
                     # Keine Kollision - direkte Linie
                     return None
 
-                # Berechne Kontrollpunkt für Kurve
+                # Berechne Kontrollpunkt fÃ¼r Kurve
                 # Mittelpunkt der Linie
                 mid_x = (x1 + x2) / 2
                 mid_y = (y1 + y2) / 2
@@ -807,13 +843,13 @@ with col3:
                 # Verschiebe Kontrollpunkt seitlich (30-50 Pixel)
                 offset = 50
 
-                # Prüfe beide Seiten und wähle die mit weniger Kollisionen
+                # PrÃ¼fe beide Seiten und wÃ¤hle die mit weniger Kollisionen
                 ctrl1_x = mid_x + offset * perp_x
                 ctrl1_y = mid_y + offset * perp_y
                 ctrl2_x = mid_x - offset * perp_x
                 ctrl2_y = mid_y - offset * perp_y
 
-                # Zähle Kollisionen für beide Optionen
+                # ZÃ¤hle Kollisionen fÃ¼r beide Optionen
                 collisions1 = sum(1 for obs_node, (obs_x, obs_y) in all_obstacles.items()
                                   if line_intersects_rectangle(x1, y1, ctrl1_x, ctrl1_y, obs_x, obs_y, node_width,
                                                                node_height)
@@ -826,7 +862,7 @@ with col3:
                                   or line_intersects_rectangle(ctrl2_x, ctrl2_y, x2, y2, obs_x, obs_y, node_width,
                                                                node_height))
 
-                # Wähle die Seite mit weniger Kollisionen
+                # WÃ¤hle die Seite mit weniger Kollisionen
                 if collisions1 <= collisions2:
                     ctrl_x, ctrl_y = ctrl1_x, ctrl1_y
                 else:
@@ -852,10 +888,10 @@ with col3:
             for cat in categories:
                 nodes_by_category[cat].sort()
 
-            # Berechne Positionen für optimale Raumnutzung
+            # Berechne Positionen fÃ¼r optimale Raumnutzung
             # Horizontaler Abstand zwischen Kategorien
             h_spacing = 200
-            # Vertikaler Abstand zwischen Status (angepasst für 100x50 Knoten)
+            # Vertikaler Abstand zwischen Status (angepasst fÃ¼r 100x50 Knoten)
             v_spacing = 90
 
             # Finde maximale Anzahl von Status in einer Kategorie
@@ -878,18 +914,18 @@ with col3:
             # Erstelle Figure
             fig = go.Figure()
 
-            # Knotenabmessungen (Mittelweg für gute Balance)
+            # Knotenabmessungen (Mittelweg fÃ¼r gute Balance)
             node_width = 100
             node_height = 50
 
             # BIDIREKTIONALE PFEILE ERKENNEN
-            # Finde alle Paare (A→B und B→A), die übereinander liegen würden
+            # Finde alle Paare (Aâ†’B und Bâ†’A), die Ã¼bereinander liegen wÃ¼rden
             bidirectional_edges = set()
             for _, row in df_dfg.iterrows():
                 from_node = row['FROM_ACTIVITY']
                 to_node = row['TO_ACTIVITY']
 
-                # Prüfe ob es auch einen Pfeil in die andere Richtung gibt
+                # PrÃ¼fe ob es auch einen Pfeil in die andere Richtung gibt
                 reverse_exists = df_dfg[
                                      (df_dfg['FROM_ACTIVITY'] == to_node) &
                                      (df_dfg['TO_ACTIVITY'] == from_node)
@@ -911,15 +947,15 @@ with col3:
                     x_from_center, y_from_center = node_positions[from_node]
                     x_to_center, y_to_center = node_positions[to_node]
 
-                    # Prüfe ob dieser Edge bidirektional ist
+                    # PrÃ¼fe ob dieser Edge bidirektional ist
                     is_bidirectional = (from_node, to_node) in bidirectional_edges
 
                     # SELF-LOOP: Task folgt auf sich selbst
                     if from_node == to_node:
-                        # Zeichne GRÖßERE, RUNDE Schleife in der linken oberen Ecke
-                        loop_size = 30  # Größer für bessere Sichtbarkeit
+                        # Zeichne GRÃ–ÃŸERE, RUNDE Schleife in der linken oberen Ecke
+                        loop_size = 30  # GrÃ¶ÃŸer fÃ¼r bessere Sichtbarkeit
 
-                        # WICHTIG: In Plotly sind GRÖSSERE Y-Werte OBEN!
+                        # WICHTIG: In Plotly sind GRÃ–SSERE Y-Werte OBEN!
                         # Startpunkt: Links am OBEREN Rand
                         start_x = x_from_center - node_width / 2
                         start_y = y_from_center + node_height / 2 - 5
@@ -928,25 +964,25 @@ with col3:
                         end_x = x_from_center - node_width / 2 + 5
                         end_y = y_from_center + node_height / 2
 
-                        # Kontrollpunkte für RUNDE Schleife (weiter weg = runder)
+                        # Kontrollpunkte fÃ¼r RUNDE Schleife (weiter weg = runder)
                         ctrl1_x = start_x - loop_size * 0.8
-                        ctrl1_y = start_y + loop_size * 0.4  # Weniger steil für rundere Form
+                        ctrl1_y = start_y + loop_size * 0.4  # Weniger steil fÃ¼r rundere Form
 
-                        ctrl2_x = end_x - loop_size * 0.4  # Weniger stark gekrümmt
+                        ctrl2_x = end_x - loop_size * 0.4  # Weniger stark gekrÃ¼mmt
                         ctrl2_y = end_y + loop_size * 0.8
 
-                        # Erzeuge Punkte für kubische Bezier-Kurve
+                        # Erzeuge Punkte fÃ¼r kubische Bezier-Kurve
                         num_points = 50
                         curve_x = []
                         curve_y = []
 
                         for i in range(num_points + 1):
                             t = i / num_points
-                            # Kubische Bezier: B(t) = (1-t)³P0 + 3(1-t)²tP1 + 3(1-t)t²P2 + t³P3
+                            # Kubische Bezier: B(t) = (1-t)Â³P0 + 3(1-t)Â²tP1 + 3(1-t)tÂ²P2 + tÂ³P3
                             x = (1 - t) ** 3 * start_x + 3 * (1 - t) ** 2 * t * ctrl1_x + 3 * (
-                                        1 - t) * t ** 2 * ctrl2_x + t ** 3 * end_x
+                                    1 - t) * t ** 2 * ctrl2_x + t ** 3 * end_x
                             y = (1 - t) ** 3 * start_y + 3 * (1 - t) ** 2 * t * ctrl1_y + 3 * (
-                                        1 - t) * t ** 2 * ctrl2_y + t ** 3 * end_y
+                                    1 - t) * t ** 2 * ctrl2_y + t ** 3 * end_y
                             curve_x.append(x)
                             curve_y.append(y)
 
@@ -980,7 +1016,7 @@ with col3:
                             arrowcolor='rgba(100, 100, 100, 0.8)'
                         ))
 
-                        # Frequency-Label AUF dem Pfeil (am höchsten Punkt der Kurve)
+                        # Frequency-Label AUF dem Pfeil (am hÃ¶chsten Punkt der Kurve)
                         mid_idx = len(curve_x) // 2
                         label_x = curve_x[mid_idx]
                         label_y = curve_y[mid_idx]
@@ -997,7 +1033,7 @@ with col3:
                             borderpad=2
                         ))
 
-                        # Springe zur nächsten Edge (Self-Loop ist fertig)
+                        # Springe zur nÃ¤chsten Edge (Self-Loop ist fertig)
                         continue
 
                     # NORMALE EDGES (nicht Self-Loop)
@@ -1036,7 +1072,7 @@ with col3:
                             x_to += perp_x * offset
                             y_to += perp_y * offset
 
-                    # Prüfe auf Kollisionen mit anderen Knoten
+                    # PrÃ¼fe auf Kollisionen mit anderen Knoten
                     obstacles = {n: pos for n, pos in node_positions.items()
                                  if n != from_node and n != to_node}
 
@@ -1056,7 +1092,7 @@ with col3:
 
                         for i in range(num_points + 1):
                             t = i / num_points
-                            # Quadratische Bezier-Formel: B(t) = (1-t)²P0 + 2(1-t)tP1 + t²P2
+                            # Quadratische Bezier-Formel: B(t) = (1-t)Â²P0 + 2(1-t)tP1 + tÂ²P2
                             x = (1 - t) ** 2 * x_from + 2 * (1 - t) * t * ctrl_x + t ** 2 * x_to
                             y = (1 - t) ** 2 * y_from + 2 * (1 - t) * t * ctrl_y + t ** 2 * y_to
                             curve_x.append(x)
@@ -1068,14 +1104,14 @@ with col3:
                             y=curve_y[:-3],
                             mode='lines',
                             line=dict(
-                                width=1.5,  # Konstante Breite für alle Pfeile
+                                width=1.5,  # Konstante Breite fÃ¼r alle Pfeile
                                 color='rgba(100, 100, 100, 0.8)'
                             ),
                             showlegend=False,
                             hoverinfo='skip'
                         ))
 
-                        # Pfeil-Annotation für das Ende der Kurve
+                        # Pfeil-Annotation fÃ¼r das Ende der Kurve
                         arrow_end_idx = -1
                         arrow_start_idx = -5 if len(curve_x) > 5 else -2
 
@@ -1091,7 +1127,7 @@ with col3:
                             showarrow=True,
                             arrowhead=2,
                             arrowsize=1.5,
-                            arrowwidth=1.5,  # Konstante Breite für alle Pfeile
+                            arrowwidth=1.5,  # Konstante Breite fÃ¼r alle Pfeile
                             arrowcolor='rgba(100, 100, 100, 0.8)'
                         ))
 
@@ -1099,7 +1135,7 @@ with col3:
                         mid_x = curve_x[len(curve_x) // 2]
                         mid_y = curve_y[len(curve_y) // 2]
 
-                        # Füge Frequency-Label hinzu
+                        # FÃ¼ge Frequency-Label hinzu
                         annotations.append(dict(
                             x=mid_x,
                             y=mid_y,
@@ -1127,7 +1163,7 @@ with col3:
                             showarrow=True,
                             arrowhead=2,
                             arrowsize=1.5,
-                            arrowwidth=1.5,  # Konstante Breite für alle Pfeile
+                            arrowwidth=1.5,  # Konstante Breite fÃ¼r alle Pfeile
                             arrowcolor='rgba(100, 100, 100, 0.8)'
                         ))
 
@@ -1135,7 +1171,7 @@ with col3:
                         mid_x = (x_from + x_to) / 2
                         mid_y = (y_from + y_to) / 2
 
-                        # Füge Frequency-Label hinzu
+                        # FÃ¼ge Frequency-Label hinzu
                         annotations.append(dict(
                             x=mid_x,
                             y=mid_y,
@@ -1155,7 +1191,7 @@ with col3:
                 status = get_status(node)
                 color = category_colors.get(cat, '#999999')
 
-                # Füge Rechteck als Shape hinzu (verwendet node_width und node_height von oben)
+                # FÃ¼ge Rechteck als Shape hinzu (verwendet node_width und node_height von oben)
                 shapes.append(dict(
                     type='rect',
                     x0=x - node_width / 2,
@@ -1168,33 +1204,33 @@ with col3:
                 ))
 
 
-                # Füge Text-Annotation für jeden Knoten hinzu
-                # Kategorie (fett) über Status
+                # FÃ¼ge Text-Annotation fÃ¼r jeden Knoten hinzu
+                # Kategorie (fett) Ã¼ber Status
 
-                # Dynamische Schriftgröße - SEHR KONSERVATIV für alle Fenstergrößen
+                # Dynamische SchriftgrÃ¶ÃŸe - SEHR KONSERVATIV fÃ¼r alle FenstergrÃ¶ÃŸen
                 def calculate_font_size(text, actual_node_width):
-                    """Berechnet optimale Schriftgröße für Text im Knoten."""
+                    """Berechnet optimale SchriftgrÃ¶ÃŸe fÃ¼r Text im Knoten."""
                     if not text:
                         return 7
 
-                    # Entferne HTML-Tags für Längenberechnung
+                    # Entferne HTML-Tags fÃ¼r LÃ¤ngenberechnung
                     clean_text = text.replace('<b>', '').replace('</b>', '').replace('<br>', '\n')
 
-                    # Finde längste Zeile
+                    # Finde lÃ¤ngste Zeile
                     lines = clean_text.split('\n')
                     max_line_length = max(len(line) for line in lines)
 
-                    # SEHR KONSERVATIVE Berechnung mit großem Sicherheitspuffer
+                    # SEHR KONSERVATIVE Berechnung mit groÃŸem Sicherheitspuffer
                     # Da Plotly die Knoten skaliert, aber Schrift absolut ist,
-                    # müssen wir sehr vorsichtig sein
+                    # mÃ¼ssen wir sehr vorsichtig sein
 
-                    # Verfügbare Breite: nur 70% der Knotenbreite nutzen
+                    # VerfÃ¼gbare Breite: nur 70% der Knotenbreite nutzen
                     available_width = actual_node_width * 0.7
 
-                    # Berechne mit großem Sicherheitsfaktor (0.7 statt 0.6)
+                    # Berechne mit groÃŸem Sicherheitsfaktor (0.7 statt 0.6)
                     optimal_size = available_width / (max_line_length * 0.7)
 
-                    # Sehr enge Grenzen für Sicherheit
+                    # Sehr enge Grenzen fÃ¼r Sicherheit
                     # Bei 80px: max 8pt (nicht mehr!)
                     min_size = 5
                     max_size = 8  # Reduziert von 9
@@ -1209,7 +1245,7 @@ with col3:
                 else:
                     display_text = f'<b>{cat}</b>'
 
-                # Berechne optimale Schriftgröße
+                # Berechne optimale SchriftgrÃ¶ÃŸe
                 font_size = calculate_font_size(display_text, node_width)
 
                 annotations.append(dict(
@@ -1222,7 +1258,7 @@ with col3:
                     yanchor='middle'
                 ))
 
-                # Unsichtbarer Scatter-Point für Hover-Info
+                # Unsichtbarer Scatter-Point fÃ¼r Hover-Info
                 fig.add_trace(go.Scatter(
                     x=[x],
                     y=[y],
@@ -1266,7 +1302,7 @@ pip install plotly==5.24.1
 python -m pip install plotly==5.24.1
 pip install --user plotly==5.24.1
 
-# Prüfe welches Python Streamlit verwendet:
+# PrÃ¼fe welches Python Streamlit verwendet:
 import sys
 print(sys.executable)
             """, language="bash")
@@ -1276,12 +1312,12 @@ print(sys.executable)
 
     st.caption(f"Anzeige der Visualisierungen basierend auf {len(filtered_df)} von {len(df_eventlog)} Datensätzen.")
 
-    # Schließt den zentrierten Container für col3
+    # SchlieÃŸt den zentrierten Container fÃ¼r col3
     st.markdown("</div>", unsafe_allow_html=True)
 
 ########################################################################################################################
 
-# CSS für Zentrierung (optionales Styling aus dem Originalcode)
+# CSS fÃ¼r Zentrierung (optionales Styling aus dem Originalcode)
 st.markdown("""
 <style>
 .center-col-content {
