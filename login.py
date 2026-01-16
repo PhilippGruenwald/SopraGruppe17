@@ -12,27 +12,19 @@ load_dotenv()
 
 def get_connection_string():
     """
-    Erstellt einen Connection String basierend auf den Credentials des angemeldeten Users.
+    Erstellt einen Connection String mit den FESTEN Technical User Credentials aus .env.
+    Diese Credentials werden für ALLE Datenbankverbindungen verwendet.
 
     Returns:
-        str: Connection String für pyodbc oder None wenn nicht angemeldet
+        str: Connection String für pyodbc
     """
-    # Prüfe ob User angemeldet ist
-    if not st.session_state.get('authenticated', False):
-        return None
+    # Server und Database aus .env
+    server = os.environ.get('Server', 'edu.hdm-server.eu')
+    database = os.environ.get('Database', 'ERPDEV')
 
-    # Server aus .env (Fallback auf den bekannten Server)
-    server = os.environ.get('SERVER', 'edu.hdm-server.eu')
-
-    # Database ist immer ERPDEV (für alle User gleich!)
-    database = 'ERPDEV'
-
-    # User-Credentials aus Session State
-    username = st.session_state.get('username')
-    password = st.session_state.get('password')
-
-    if not all([username, password]):
-        return None
+    # FESTE Technical User Credentials aus .env
+    username = os.environ.get('UID', 'ERP_REMOTE_USER')
+    password = os.environ.get('PWD', 'Password123')
 
     connection_string = (
         "Driver={ODBC Driver 17 for SQL Server};"
@@ -56,9 +48,9 @@ def get_user_info():
         return None
 
     return {
-        'username': st.session_state.get('username'),
-        'database': 'ERPDEV',  # Database ist immer ERPDEV
-        'display_name': st.session_state.get('username', 'Unbekannt')
+        'username': st.session_state.get('display_username'),  # Der User aus der Login-Maske
+        'database': 'ERPDEV',
+        'display_name': st.session_state.get('display_username', 'Unbekannt')
     }
 
 
@@ -68,42 +60,60 @@ def get_user_info():
 
 def test_connection(username, password):
     """
-    Testet die Datenbankverbindung mit den angegebenen Credentials.
+    Testet die Login-Credentials gegen die T_USER Tabelle.
+    Die Datenbankverbindung erfolgt über den FESTEN Technical User.
 
     Args:
-        username: Der Benutzername (z.B. w25s209 oder W25S209)
-        password: Das Passwort
+        username: Der Benutzername aus der Login-Maske (z.B. w25s209)
+        password: Das Passwort aus der Login-Maske
 
     Returns:
         tuple: (erfolg: bool, fehlermeldung: str oder None)
     """
     try:
-        # Server aus .env
-        server = os.environ.get('SERVER', 'edu.hdm-server.eu')
+        # Verbinde mit FESTEN Credentials
+        connection_string = get_connection_string()
 
-        # Database ist immer ERPDEV (für alle User gleich!)
-        database = 'ERPDEV'
-
-        connection_string = (
-            "Driver={ODBC Driver 17 for SQL Server};"
-            f"Server={server};"
-            f"Database={database};"
-            f"UID={username};"
-            f"PWD={password}"
-        )
-
-        # Verbindung testen
+        # Teste die Verbindung
         conn = pyodbc.connect(connection_string, timeout=5)
-        conn.close()
 
+        # Validiere User-Credentials gegen T_USER Tabelle (case-insensitive)
+        cursor = conn.cursor()
+
+        # SQL Query - Username ist case-insensitive durch UPPER()
+        sql_query = """
+            SELECT USERNAME, USERPASS, SECURITYLEVEL
+            FROM T_USER
+            WHERE UPPER(USERNAME) = UPPER(?)
+        """
+
+        cursor.execute(sql_query, username)
+        result = cursor.fetchone()
+
+        if result is None:
+            conn.close()
+            return False, f"Benutzer '{username}' nicht gefunden."
+
+        db_username, db_password, security_level = result
+
+        # Validiere Passwort
+        if db_password != password:
+            conn.close()
+            return False, "Ungültiges Passwort."
+
+        # Speichere zusätzliche User-Informationen im Session State
+        st.session_state['security_level'] = security_level
+        st.session_state['db_username'] = db_username  # Der tatsächliche Username aus der DB (Großbuchstaben)
+
+        conn.close()
         return True, None
 
     except pyodbc.Error as ex:
         error_msg = str(ex)
         if "Login failed" in error_msg:
-            return False, "Ungültige Anmeldedaten. Bitte überprüfen Sie Benutzername und Passwort."
+            return False, "Datenbankverbindung fehlgeschlagen. Bitte kontaktieren Sie den Administrator."
         elif "Cannot open database" in error_msg:
-            return False, f"Datenbank '{database}' nicht gefunden oder nicht erreichbar."
+            return False, "Datenbank nicht erreichbar. Bitte kontaktieren Sie den Administrator."
         else:
             return False, f"Verbindungsfehler: {error_msg}"
     except Exception as ex:
@@ -139,7 +149,7 @@ def show_login_page():
             password = st.text_input(
                 "Passwort",
                 type="password",
-                help="Ihr Datenbank-Passwort"
+                help="Ihr Passwort"
             )
 
             submit_button = st.form_submit_button(
@@ -151,15 +161,15 @@ def show_login_page():
                 if not username or not password:
                     st.error("⚠️ Bitte füllen Sie alle Felder aus.")
                 else:
-                    with st.spinner("Verbindung wird hergestellt..."):
+                    with st.spinner("Anmeldung wird geprüft..."):
                         success, error_msg = test_connection(username, password)
 
                         if success:
                             # Login erfolgreich - Daten im Session State speichern
                             st.session_state['authenticated'] = True
-                            st.session_state['username'] = username
-                            st.session_state['password'] = password
-                            st.session_state['database'] = 'ERPDEV'  # Immer ERPDEV für alle User
+                            st.session_state[
+                                'display_username'] = username  # Der User aus der Login-Maske (Kleinbuchstaben)
+                            # security_level und db_username wurden bereits in test_connection() gespeichert
 
                             st.success("✅ Anmeldung erfolgreich!")
                             st.rerun()
@@ -170,7 +180,7 @@ def show_login_page():
         st.markdown("""
         ---
         <div style='text-align: center; color: #666; font-size: 0.9em;'>
-        <p>💡 <b>Hinweis:</b> Verwenden Sie Ihren W-User </p>
+        <p>💡 <b>Hinweis:</b> Verwenden Sie Ihren W-User und Ihr Passwort aus der Datenbank.</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -180,7 +190,7 @@ def logout():
     Meldet den Benutzer ab und löscht alle Session-Daten.
     """
     # Lösche alle authentifizierungsbezogenen Daten
-    for key in ['authenticated', 'username', 'password', 'database']:
+    for key in ['authenticated', 'display_username', 'db_username', 'security_level']:
         if key in st.session_state:
             del st.session_state[key]
 
@@ -200,15 +210,16 @@ def is_authenticated():
 def get_user_credentials():
     """
     Gibt die Credentials des angemeldeten Benutzers zurück.
+    ACHTUNG: Dies gibt die DISPLAY-Credentials zurück, nicht die DB-Credentials!
 
     Returns:
-        dict: Dictionary mit username, password und database
+        dict: Dictionary mit display_username und security_level
     """
     if not is_authenticated():
         return None
 
     return {
-        'username': st.session_state.get('username'),
-        'password': st.session_state.get('password'),
-        'database': 'ERPDEV'  # Immer ERPDEV für alle User
+        'display_username': st.session_state.get('display_username'),  # Aus Login-Maske
+        'db_username': st.session_state.get('db_username'),  # Aus DB (Großbuchstaben)
+        'security_level': st.session_state.get('security_level', 3)
     }
