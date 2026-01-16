@@ -582,6 +582,17 @@ with col3:
     st.markdown("<div class='center-col-content'>", unsafe_allow_html=True)
     st.markdown("<h3 style='text-align: center;'>KPI - Zielerreichung</h3>", unsafe_allow_html=True)
 
+    # -----------------------------
+    # BERECHTIGUNGSPRÜFUNG
+    # -----------------------------
+    # SecurityLevel aus Login-Session holen
+    user_security_level = st.session_state.get('security_level', 1)
+    can_edit_sollwerte = (user_security_level == 3)
+
+    # Zeige Hinweis bei fehlenden Rechten
+    if not can_edit_sollwerte:
+        st.warning(f"⚠️ **Eingeschränkte Berechtigung:** Sie können Soll-Werte nur anzeigen, aber nicht bearbeiten.")
+
 
     # -----------------------------
     # SOLLWERTE AUS DB LADEN
@@ -606,7 +617,7 @@ with col3:
             "EXEC stored_proc.sp_set_process_target_time ?, ?, ?",
             kpi_name,
             float(value),
-            "w25s227"  # aktuell hart codiert
+            user_info['username'] if user_info else "unknown"  # Username aus Login-Maske
         )
         conn.commit()
         conn.close()
@@ -627,7 +638,7 @@ with col3:
         df["SOLL"] = df["KPI_NAME"].map(sollwerte).fillna(0.0)
         df["IST (Durchschnitt)"] = pd.to_numeric(df["AVG_VALUE"], errors='coerce').fillna(0.0)
 
-        # IST Spalte fÃ¼r Anzeige umbenennen
+        # IST Spalte für Anzeige umbenennen
         df.rename(columns={"IST": "IST (Durchschnitt)"}, inplace=True)
 
 
@@ -642,7 +653,13 @@ with col3:
             else:
                 return "🔴"
 
+
         df["Ampel"] = df.apply(ampel, axis=1)
+
+        # -----------------------------
+        # ORIGINALE WERTE SPEICHERN (für Änderungserkennung)
+        # -----------------------------
+        original_soll_values = df[["KPI_NAME", "SOLL"]].copy()
 
         # -----------------------------
         # EDITIERBARE TABELLE (NUR EINE)
@@ -651,7 +668,9 @@ with col3:
             df[["KPI_NAME", "SOLL", "IST (Durchschnitt)", "Ampel"]],
             hide_index=True,
             use_container_width=True,
-            disabled=["KPI_NAME", "IST (Durchschnitt)", "Ampel"],
+            disabled=["KPI_NAME", "IST (Durchschnitt)", "Ampel"] if can_edit_sollwerte else ["KPI_NAME", "SOLL",
+                                                                                             "IST (Durchschnitt)",
+                                                                                             "Ampel"],
             column_config={
                 "SOLL": st.column_config.NumberColumn(
                     "SOLL",
@@ -663,14 +682,43 @@ with col3:
         )
 
         # -----------------------------
-        # SPEICHERN
+        # SPEICHERN - NUR BEI BERECHTIGUNG STUFE 3
         # -----------------------------
-        if st.button("SOLLWERTE speichern"):
-            for _, row in edited_df.iterrows():
-                save_sollwert(row["KPI_NAME"], row["SOLL"])
+        if st.button("SOLLWERTE speichern", disabled=not can_edit_sollwerte):
+            # Doppelte Sicherheitsprüfung
+            if not can_edit_sollwerte:
+                st.error(
+                    f"❌ **Keine Berechtigung:** Sie benötigen Berechtigung Stufe 3 (Leitung), um Soll-Werte zu speichern.\n\n"
+                    f"Ihre aktuelle Berechtigung: Stufe {user_security_level}")
+            else:
+                try:
+                    # Zähler für geänderte Werte
+                    changed_count = 0
 
-            st.success("SOLLWERTE erfolgreich gespeichert.")
-            st.rerun()
+                    # Nur geänderte Werte speichern
+                    for idx, row in edited_df.iterrows():
+                        kpi_name = row["KPI_NAME"]
+                        new_soll = row["SOLL"]
+
+                        # Finde den ursprünglichen Wert
+                        original_row = original_soll_values[original_soll_values["KPI_NAME"] == kpi_name]
+
+                        if not original_row.empty:
+                            original_soll = original_row.iloc[0]["SOLL"]
+
+                            # Nur speichern wenn sich der Wert geändert hat
+                            if abs(new_soll - original_soll) > 0.001:  # Toleranz für Fließkomma-Vergleich
+                                save_sollwert(kpi_name, new_soll)
+                                changed_count += 1
+
+                    if changed_count > 0:
+                        st.success(f"✅ {changed_count} SOLLWERT(E) erfolgreich gespeichert.")
+                        st.rerun()
+                    else:
+                        st.info("ℹ️ Keine Änderungen vorgenommen - nichts zu speichern.")
+
+                except Exception as e:
+                    st.error(f"❌ Fehler beim Speichern: {str(e)}")
 
     st.markdown("</div>", unsafe_allow_html=True)
     ########################################################################################################
