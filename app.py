@@ -42,7 +42,7 @@ if 'zeitraum_input' not in st.session_state: st.session_state['zeitraum_input'] 
 if 'start_date_input' not in st.session_state: st.session_state['start_date_input'] = DEFAULT_START_DATE
 if 'end_date_input' not in st.session_state: st.session_state['end_date_input'] = DEFAULT_END_DATE
 if 'produkt_filter_exklusiv' not in st.session_state: st.session_state['produkt_filter_exklusiv'] = False
-if 'kunde_input' not in st.session_state: st.session_state['kunde_input'] = []
+if 'kunde_input' not in st.session_state: st.session_state['kunde_input'] = None
 if 'produkt_input' not in st.session_state: st.session_state['produkt_input'] = []
 
 # Steuert, ob die angewendeten Filter die DB-Abfrage triggern sollen (Muss beim Start FALSE sein)
@@ -53,7 +53,7 @@ if 'data_applied' not in st.session_state: st.session_state['data_applied'] = Fa
 if 'applied_zeitraum' not in st.session_state: st.session_state['applied_zeitraum'] = 'Gesamt'
 if 'applied_start_date' not in st.session_state: st.session_state['applied_start_date'] = DEFAULT_START_DATE
 if 'applied_end_date' not in st.session_state: st.session_state['applied_end_date'] = DEFAULT_END_DATE
-if 'applied_kunde_input' not in st.session_state: st.session_state['applied_kunde_input'] = []
+if 'applied_kunde_input' not in st.session_state: st.session_state['applied_kunde_input'] = None
 if 'applied_produkt_input' not in st.session_state: st.session_state['applied_produkt_input'] = []
 if 'applied_produkt_filter_exklusiv' not in st.session_state: st.session_state[
     'applied_produkt_filter_exklusiv'] = False
@@ -85,7 +85,7 @@ def reset_filters():
     st.session_state['zeitraum_input'] = 'Gesamt'
     st.session_state['start_date_input'] = DEFAULT_START_DATE
     st.session_state['end_date_input'] = DEFAULT_END_DATE
-    st.session_state['kunde_input'] = []
+    st.session_state['kunde_input'] = None
     st.session_state['produkt_input'] = []
     st.session_state['produkt_filter_exklusiv'] = False
 
@@ -154,7 +154,7 @@ def load_eventlog_data(customer_ids, start_date, end_date, material_ids, is_stri
     # --- Parameter formatieren (liest direkt von den Funktionsargumenten) ---
     customer_id_param = f"'{','.join(map(str, customer_ids))}'" if customer_ids else "NULL"
     start_date_param = f"'{start_date.strftime('%Y-%m-%d')}'"
-    end_date_param = f"'{end_date.strftime('%Y-%m-%d')}'"
+    end_date_param = f"'{end_date.strftime('%Y-%m-%d')} 23:59:59'"
     material_ids_list = [str(p).replace("'", "''") for p in material_ids]
     material_ids_param = f"'{','.join(material_ids_list)}'" if material_ids_list else "NULL"
     material_filter_mode_param = 1 if is_strict_inclusion else 0
@@ -338,8 +338,16 @@ df_dfg = pd.DataFrame()
 # Bedingte AusfÃ¼hrung: FÃ¼hre SQL-Abfrage nur aus, wenn der Button gedrÃ¼ckt wurde
 if st.session_state.get('data_applied', False):
 
+    # 1. Wert aus dem Session State lesen (ist jetzt ein einzelner Int oder None)
+    selected_kunde = st.session_state.get('applied_kunde_input', None)
+
+    # 2. WICHTIG: In eine Liste umwandeln, damit .join() in den Funktionen nicht abstürzt
+    if selected_kunde is not None:
+        applied_customer_ids = [selected_kunde]  # Packt die ID in eine Liste [101]
+    else:
+        applied_customer_ids = []  # Falls "Alle Kunden" gewählt wurde
+
     # Applied Parameter aus dem Session State lesen
-    applied_customer_ids = st.session_state.get('applied_kunde_input', [])
     applied_start_date = st.session_state.get('applied_start_date', DEFAULT_START_DATE)
     applied_end_date = st.session_state.get('applied_end_date', DEFAULT_END_DATE)
     applied_material_ids = st.session_state.get('applied_produkt_input', [])
@@ -347,7 +355,7 @@ if st.session_state.get('data_applied', False):
 
     # DATEN LADEN: Alle DatensÃ¤tze werden geladen
     df_eventlog = load_eventlog_data(
-        customer_ids=applied_customer_ids,
+        customer_ids=applied_customer_ids, # Hier wird jetzt [ID] übergeben
         start_date=applied_start_date,
         end_date=applied_end_date,
         material_ids=applied_material_ids,
@@ -472,7 +480,7 @@ with col1:
 
             # 2. Kunde (Multiselect)
             st.markdown("##### Kunde", unsafe_allow_html=True)
-            st.multiselect(
+            st.selectbox(
                 'Kunde auswählen',
                 options=customer_ids_options,  # Die Box enthÃ¤lt technisch die IDs
                 format_func=lambda x: customer_map.get(x, str(x)),  # Zeigt aber den Namen an!
@@ -615,8 +623,9 @@ with col3:
         df = df_kpi.copy()
 
         # SOLL / IST
+        # Sicherstellen, dass SOLL und IST Zahlen sind, Fehlwerte werden zu 0.0
         df["SOLL"] = df["KPI_NAME"].map(sollwerte).fillna(0.0)
-        df["IST"] = df["AVG_VALUE"]
+        df["IST (Durchschnitt)"] = pd.to_numeric(df["AVG_VALUE"], errors='coerce').fillna(0.0)
 
         # IST Spalte fÃ¼r Anzeige umbenennen
         df.rename(columns={"IST": "IST (Durchschnitt)"}, inplace=True)
