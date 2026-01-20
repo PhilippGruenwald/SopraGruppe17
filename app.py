@@ -673,8 +673,12 @@ with col3:
                                                                                              "Ampel"],
             column_config={
                 "SOLL": st.column_config.NumberColumn(
-                    "SOLL",
+                    "SOLL (MINUTEN)",
                     step=1.0,
+                    format="%.2f"
+                ),
+                "IST (Durchschnitt)": st.column_config.NumberColumn(
+                    "Ø IST (MINUTEN)",
                     format="%.2f"
                 )
             },
