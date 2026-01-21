@@ -76,7 +76,7 @@ def apply_filters():
     st.session_state.data_applied = True
 
     # NEU: Erzwinge sofortigen Rerun, damit die gecachten Funktionen den neuen State sehen
-    st.rerun()
+    # st.rerun() # Aukommentiert wegen Fehler st.rerun in callback
 
 
 def reset_filters():
