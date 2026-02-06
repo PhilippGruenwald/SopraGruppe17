@@ -514,7 +514,7 @@ with col1:
 
         # --- BUTTONS NEBENEINANDER (MUSS AUSSERHALB DES FORMS SEIN) ---
         # st.button ruft reset_filters auf, was wiederum apply_filters aufruft
-        st.button("Filter zurücksetzen", on_click=reset_filters, key='reset_button')
+        # st.button("Filter zurücksetzen", on_click=reset_filters, key='reset_button')
 
 # --- 5. Filter-Anwendungslogik (ENTFERNT, DA IN DB AUSGEFÃœHRT) ---
 
